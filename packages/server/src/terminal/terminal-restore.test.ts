@@ -95,4 +95,19 @@ describe("terminal restore policy", () => {
     expect(payload.startsWith("\u001b[?1049h")).toBe(true);
     expect(payload.indexOf("restored")).toBeGreaterThan("\u001b[?1049h".length);
   });
+
+  test("sends ANSI the terminal already rendered without reading the cells", () => {
+    const frame = decodeTerminalStreamFrame(
+      encodeTerminalRestoreFrame({
+        slot: 4,
+        snapshot: {
+          state: terminalState(""),
+          revision: 1,
+          ansi: "pre-rendered",
+        },
+      }),
+    );
+
+    expect(new TextDecoder().decode(frame?.payload ?? new Uint8Array())).toBe("pre-rendered");
+  });
 });
