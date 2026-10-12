@@ -1,6 +1,7 @@
 import { test, expect } from "../support/fixtures";
-import { TerminalE2EHarness } from "../support/helpers/terminal-dsl";
-import { withMouseTerminal } from "../support/helpers/terminal-mouse";
+import { TerminalE2EHarness, type TerminalInstance } from "../support/helpers/terminal-dsl";
+import { readTerminalBufferType, withMouseTerminal } from "../support/helpers/terminal-mouse";
+import { waitForTerminalContent } from "../support/helpers/terminal-perf";
 
 /**
  * Regression: mouse tracking must survive the terminal restore that happens when
@@ -33,5 +34,55 @@ test.describe("terminal mouse tracking across a restore", () => {
 
       expect(await terminal.wheelReportsToApp()).toBe(true);
     });
+  });
+});
+
+/**
+ * Regression: the alternate screen must survive the restore too.
+ *
+ * RIS drops the alternate screen along with the DEC modes, and the program has no
+ * reason to enter it a second time. Repainted into the normal buffer, a TUI keeps
+ * writing frames there, and the wheel scrolls those stale frames instead of the
+ * program scrolling its own transcript.
+ */
+const ALT_SCREEN_PROGRAM = [
+  "process.stdin.setRawMode?.(true);",
+  "process.stdin.resume();",
+  'process.stdout.write("\u001b[?1049h");',
+  'process.stdout.write("ALT_READY\r\n");',
+  "setInterval(function () {}, 1000);",
+].join("\n");
+
+test.describe("terminal alternate screen across a restore", () => {
+  let harness: TerminalE2EHarness;
+
+  test.beforeEach(async () => {
+    harness = await TerminalE2EHarness.create({ tempPrefix: "terminal-altscreen-restore" });
+  });
+
+  test.afterEach(async () => {
+    await harness.cleanup();
+  });
+
+  test("the client stays on the alternate screen after re-attaching", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+
+    const instance: TerminalInstance = await harness.createTerminal({
+      name: "altscreen",
+      command: process.execPath,
+      args: ["-e", ALT_SCREEN_PROGRAM],
+    });
+    try {
+      await harness.openTerminal(page, { terminalId: instance.id });
+      await waitForTerminalContent(page, (text) => text.includes("ALT_READY"), 20_000);
+      await expect.poll(() => readTerminalBufferType(page), { timeout: 10_000 }).toBe("alternate");
+
+      await harness.openTerminal(page, { terminalId: instance.id });
+      await waitForTerminalContent(page, (text) => text.includes("ALT_READY"), 20_000);
+
+      await expect.poll(() => readTerminalBufferType(page), { timeout: 10_000 }).toBe("alternate");
+    } finally {
+      await harness.killTerminal(instance.id);
+    }
   });
 });

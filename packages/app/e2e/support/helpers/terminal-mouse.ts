@@ -27,7 +27,16 @@ interface TerminalWindow {
   __paseoTerminal?: {
     element: HTMLElement;
     onData: (cb: (data: string) => void) => { dispose: () => void };
+    buffer: { active: { type: string } };
   };
+}
+
+/** Which buffer the client terminal is painting into ("normal" | "alternate"). */
+export function readTerminalBufferType(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const terminal = (window as unknown as TerminalWindow).__paseoTerminal;
+    return terminal?.buffer.active.type ?? "";
+  });
 }
 
 function readMouseMode(page: Page): Promise<boolean> {
@@ -67,6 +76,8 @@ export interface MouseTerminal {
   enableMouse(): Promise<void>;
   /** Whether a wheel event is reported to the program as an SGR mouse report. */
   wheelReportsToApp(): Promise<boolean>;
+  /** Which buffer the client is painting into ("normal" | "alternate"). */
+  bufferType(): Promise<string>;
   /** Re-attaches the client, forcing a terminal restore. */
   reattach(): Promise<void>;
 }
@@ -103,6 +114,9 @@ export async function withMouseTerminal<T>(
         await expect.poll(() => readMouseMode(page), { timeout: 10_000 }).toBe(true);
         const report = await readWheelReport(page);
         return report.mouseMode && isSgrWheelReport(report.emitted);
+      },
+      async bufferType() {
+        return readTerminalBufferType(page);
       },
       async reattach() {
         await harness.openTerminal(page, { terminalId: instance.id });
