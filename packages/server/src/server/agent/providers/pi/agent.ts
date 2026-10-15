@@ -1368,11 +1368,10 @@ export class PiRpcAgentSession implements AgentSession {
       }
       throw error;
     }
-    // The steer is already queued inside pi; if the turn moved on meanwhile its fate
-    // is ambiguous, so surface it instead of replacing the wrong turn.
-    if (this.closed || this.activeTurnId !== options.expectedTurnId) {
-      return { status: "unavailable" };
-    }
+    // A resolved steer means pi holds the message: pi delivers a queued steer even
+    // after this turn ends. Reporting anything else here tells the caller the message
+    // went nowhere, and a caller that retries or replaces the turn puts the same text
+    // in front of the model a second time while the app shows one message.
     this.pendingSteerSubmissions.push({
       text: payload.text,
       clientMessageId: options.clientMessageId ?? null,

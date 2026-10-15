@@ -2522,6 +2522,44 @@ describe("PiRpcAgentSession steering", () => {
     expect(fakeSession.steerCalls).toEqual([{ message: "steer", imageCount: 0 }]);
   });
 
+  test("accepts a steer Pi took as the turn settles around the RPC", async () => {
+    const { pi, session, events } = await createSession();
+    const fakeSession = pi.latestSession();
+    const { turnId } = await session.startTurn("run", { clientMessageId: "client-prompt-1" });
+    // Pi takes the steer into its queue, then the turn settles before the RPC returns.
+    // Pi still delivers that message, so the steer must not be reported as a miss:
+    // the caller would retry or replace the turn and submit the same text twice.
+    const originalSteer = fakeSession.steer.bind(fakeSession);
+    fakeSession.steer = async (
+      message: string,
+      images?: Array<{ type: "image"; data: string; mimeType: string }>,
+    ) => {
+      await originalSteer(message, images);
+      fakeSession.finishTurn();
+    };
+
+    const result = await session.steerActiveTurn("do the thing", {
+      expectedTurnId: turnId,
+      clientMessageId: "client-steer-1",
+    });
+    await flushTurnScheduling();
+
+    expect(result).toEqual({ status: "accepted" });
+    expect(fakeSession.steerCalls).toEqual([{ message: "do the thing", imageCount: 0 }]);
+
+    fakeSession.finishSubmittedUserMessage({
+      id: "entry-steer-1",
+      parentId: null,
+      text: "do the thing",
+    });
+    expect(events.timelineItems()).toContainEqual({
+      type: "user_message",
+      text: "do the thing",
+      messageId: "entry-steer-1",
+      clientMessageId: "client-steer-1",
+    });
+  });
+
   test("surfaces an ambiguous steer failure without interrupting", async () => {
     const { pi, session } = await createSession();
     const fakeSession = pi.latestSession();
