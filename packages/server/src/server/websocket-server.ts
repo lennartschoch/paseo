@@ -1911,7 +1911,12 @@ export class VoiceAssistantWebSocketServer {
         // COMPAT(daemonDiagnostics): added in v0.1.100, remove gate after 2026-12-25 once daemon floor >= v0.1.100.
         daemonDiagnostics: true,
         // COMPAT(daemonSelfUpdate): added in v0.1.93, remove gate after 2026-12-13.
-        daemonSelfUpdate: this.daemonRuntimeConfig?.desktopManaged !== true,
+        // Fork builds install from the fork's GitHub release, not npm
+        // @getpaseo/cli@latest. Advertising the npm updater would silently
+        // replace the fork with upstream, so keep it off.
+        daemonSelfUpdate:
+          this.daemonRuntimeConfig?.desktopManaged !== true &&
+          !this.daemonVersion.includes("-fork."),
         // COMPAT(agentForkContext): added in v0.1.102, remove gate after 2026-12-28.
         agentForkContext: true,
         // COMPAT(agentForkContextCursor): added in v0.1.108, remove gate after 2027-01-14.

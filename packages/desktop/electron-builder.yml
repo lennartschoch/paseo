@@ -37,7 +37,9 @@ extraResources:
     to: editor-target-icons
 publish:
   provider: github
-  owner: getpaseo
+  # Release feed for the fork. Desktop auto-update reads the fork's own
+  # GitHub releases (marked non-prerelease), never upstream's.
+  owner: lennartschoch
   repo: paseo
 mac:
   artifactName: "Paseo-${version}-${arch}.${ext}"

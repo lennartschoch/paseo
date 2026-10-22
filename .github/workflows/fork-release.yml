@@ -1,0 +1,410 @@
+name: Fork Release
+
+on:
+  push:
+    tags:
+      - "fork-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing fork tag to build (e.g. v0.13.0-beta.1-fork.1)"
+        required: true
+        type: string
+
+concurrency:
+  group: fork-release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  SOURCE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  NODE_VERSION: "22"
+  ONNXRUNTIME_NODE_INSTALL: skip
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      fork-version: ${{ steps.env.outputs.FORK_VERSION }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_TAG }}
+          fetch-depth: 0
+
+      - name: Resolve fork release
+        id: env
+        shell: bash
+        run: |
+          node scripts/fork/release-env.mjs --tag "$SOURCE_TAG" | tee -a "$GITHUB_ENV"
+          grep '^FORK_VERSION=' "$GITHUB_ENV" | tail -1 | cut -d= -f2 | sed 's/^/fork-version=/' >> "$GITHUB_OUTPUT"
+
+      - name: Create or reuse draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          source "$GITHUB_ENV"
+          set +a
+          if gh release view "$FORK_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$FORK_TAG" --repo "$GITHUB_REPOSITORY" --draft --title "Paseo Fork $FORK_VERSION"
+          else
+            args=(
+              release create "$FORK_TAG"
+              --repo "$GITHUB_REPOSITORY"
+              --draft
+              --title "Paseo Fork $FORK_VERSION"
+              --generate-notes
+            )
+            if [[ -n "${PREVIOUS_FORK_TAG:-}" ]]; then
+              args+=(--notes-start-tag "$PREVIOUS_FORK_TAG")
+            fi
+            if [[ "${FORK_IS_PRERELEASE}" == "true" ]]; then
+              args+=(--prerelease)
+            fi
+            gh "${args[@]}"
+          fi
+
+  desktop-linux:
+    needs: [create-release]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_TAG }}
+          fetch-depth: 0
+
+      - name: Resolve fork release
+        shell: bash
+        run: node scripts/fork/release-env.mjs --tag "$SOURCE_TAG" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: node scripts/npm-retry.mjs ci
+
+      - name: Apply fork version
+        run: node scripts/fork/apply-version.mjs --version "$FORK_VERSION"
+
+      - name: Install packaging tools
+        run: sudo apt-get update && sudo apt-get install -y xvfb xauth rpm
+
+      - name: Build Linux desktop release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EP_GH_IGNORE_TIME: true
+        run: >-
+          npm run build:desktop -- --publish never --linux --x64
+          -c.publish.releaseType="$FORK_RELEASE_TYPE"
+          -c.publish.channel="$FORK_RELEASE_CHANNEL"
+
+      - name: Upload Linux assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/upload-release-assets.mjs "$FORK_TAG" packages/desktop/release "$GITHUB_REPOSITORY"
+
+      - name: Upload Linux update manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$FORK_TAG" packages/desktop/release/${FORK_RELEASE_CHANNEL}-linux.yml --clobber --repo "$GITHUB_REPOSITORY"
+
+  desktop-macos:
+    needs: [create-release]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            electron_arch: arm64
+            node_heap_mb: 4096
+          - runner: macos-15-intel
+            electron_arch: x64
+            node_heap_mb: 8192
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_TAG }}
+          fetch-depth: 0
+
+      - name: Resolve fork release
+        shell: bash
+        run: node scripts/fork/release-env.mjs --tag "$SOURCE_TAG" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: node scripts/npm-retry.mjs ci
+
+      - name: Apply fork version
+        run: node scripts/fork/apply-version.mjs --version "$FORK_VERSION"
+
+      - name: Configure macOS signing
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [[ -z "${CSC_LINK:-}" ]]; then
+            echo "No signing certificate configured; building an unsigned macOS app."
+            echo "PASEO_FORK_UNSIGNED_MAC=1" >> "$GITHUB_ENV"
+            echo "CSC_IDENTITY_AUTO_DISCOVERY=false" >> "$GITHUB_ENV"
+          elif [[ -z "${APPLE_ID:-}" || -z "${APPLE_PASSWORD:-}" || -z "${APPLE_TEAM_ID:-}" ]]; then
+            echo "Certificate configured without notarization credentials; signing only."
+            echo "PASEO_FORK_MAC_NOTARIZE=0" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build macOS desktop release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EP_GH_IGNORE_TIME: true
+          CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          NODE_OPTIONS: --max-old-space-size=${{ matrix.node_heap_mb }}
+        run: |
+          set -euo pipefail
+          args=(-- --publish never --mac --${{ matrix.electron_arch }})
+          args+=("-c.publish.releaseType=$FORK_RELEASE_TYPE" "-c.publish.channel=$FORK_RELEASE_CHANNEL")
+          if [[ "${PASEO_FORK_UNSIGNED_MAC:-}" == "1" ]]; then
+            printf '{"extends":"%s/packages/desktop/electron-builder.yml","mac":{"notarize":false,"identity":null,"hardenedRuntime":false}}' "$GITHUB_WORKSPACE" > "$RUNNER_TEMP/fork-unsigned-mac.json"
+            args+=(--config "$RUNNER_TEMP/fork-unsigned-mac.json")
+          elif [[ "${PASEO_FORK_MAC_NOTARIZE:-}" == "0" ]]; then
+            printf '{"extends":"%s/packages/desktop/electron-builder.yml","mac":{"notarize":false}}' "$GITHUB_WORKSPACE" > "$RUNNER_TEMP/fork-signed-mac.json"
+            args+=(--config "$RUNNER_TEMP/fork-signed-mac.json")
+          fi
+          npm run build:desktop "${args[@]}"
+
+      - name: Upload macOS assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/upload-release-assets.mjs "$FORK_TAG" packages/desktop/release "$GITHUB_REPOSITORY"
+
+      - name: Save macOS update manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-manifest-${{ matrix.electron_arch }}
+          path: packages/desktop/release/*-mac.yml
+          retention-days: 1
+
+  android:
+    needs: [create-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_TAG }}
+          fetch-depth: 0
+
+      - name: Resolve fork release
+        shell: bash
+        run: node scripts/fork/release-env.mjs --tag "$SOURCE_TAG" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses > /dev/null || true
+
+      - name: Install dependencies
+        run: node scripts/npm-retry.mjs ci
+
+      - name: Apply fork version
+        run: node scripts/fork/apply-version.mjs --version "$FORK_VERSION"
+
+      - name: Build workspace packages
+        run: |
+          npm run build:server-deps
+          npm run build --workspace=@getpaseo/expo-two-way-audio
+
+      - name: Prebuild Android project
+        working-directory: packages/app
+        env:
+          APP_VARIANT: production
+          CI: "1"
+        run: npx expo prebuild --platform android --clean --non-interactive --no-install
+
+      - name: Build release APK
+        working-directory: packages/app/android
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Name APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="paseo-fork-${FORK_VERSION}-android.apk"
+          cp packages/app/android/app/build/outputs/apk/release/app-release.apk "$apk"
+          sha256sum "$apk" | tee "$apk.sha256"
+
+      - name: Write Android update manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="paseo-fork-${FORK_VERSION}-android.apk"
+          version_code="$(node -e "process.stdout.write(String(require('./packages/app/native-release-version').getNativeReleaseVersion('${FORK_VERSION}').androidVersionCode))")"
+          node -e '
+            const fs = require("node:fs");
+            const [apk, tag, version, versionCode, repo] = process.argv.slice(1);
+            fs.writeFileSync("latest-android.json", JSON.stringify({
+              version,
+              versionCode: Number(versionCode),
+              tag,
+              url: `https://github.com/${repo}/releases/download/${tag}/${apk}`,
+            }, null, 2) + "\n");
+          ' "$apk" "$FORK_TAG" "$FORK_VERSION" "$version_code" "$GITHUB_REPOSITORY"
+
+      - name: Upload Android assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="paseo-fork-${FORK_VERSION}-android.apk"
+          gh release upload "$FORK_TAG" "$apk" "$apk.sha256" latest-android.json --clobber --repo "$GITHUB_REPOSITORY"
+
+  daemon:
+    needs: [create-release]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_TAG }}
+          fetch-depth: 0
+
+      - name: Resolve fork release
+        shell: bash
+        run: node scripts/fork/release-env.mjs --tag "$SOURCE_TAG" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: node scripts/npm-retry.mjs ci
+
+      - name: Apply fork version
+        run: node scripts/fork/apply-version.mjs --version "$FORK_VERSION"
+
+      - name: Build daemon packages
+        run: npm run build:server
+
+      - name: Package daemon
+        run: node scripts/fork/build-daemon-package.mjs --out dist/fork
+
+      - name: Upload daemon asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$FORK_TAG" "dist/fork/paseo-daemon-${FORK_VERSION}.tar.gz" --clobber --repo "$GITHUB_REPOSITORY"
+
+  finalize:
+    needs: [create-release, desktop-linux, desktop-macos, android, daemon]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_TAG }}
+          fetch-depth: 0
+
+      - name: Resolve fork release
+        shell: bash
+        run: node scripts/fork/release-env.mjs --tag "$SOURCE_TAG" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: node scripts/npm-retry.mjs ci
+
+      - name: Download macOS manifests
+        if: ${{ needs.desktop-macos.result == 'success' }}
+        uses: actions/download-artifact@v4
+        with:
+          pattern: mac-manifest-*
+          path: mac-manifests
+
+      - name: Merge macOS update manifest
+        if: ${{ needs.desktop-macos.result == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/merge-mac-manifest.mjs \
+            "mac-manifests/mac-manifest-arm64/${FORK_RELEASE_CHANNEL}-mac.yml" \
+            "mac-manifests/mac-manifest-x64/${FORK_RELEASE_CHANNEL}-mac.yml" \
+            "${FORK_RELEASE_CHANNEL}-mac.yml"
+          gh release upload "$FORK_TAG" "${FORK_RELEASE_CHANNEL}-mac.yml" --clobber --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fail if a platform did not publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          failed=0
+          for entry in \
+            "desktop-linux=${{ needs.desktop-linux.result }}" \
+            "desktop-macos=${{ needs.desktop-macos.result }}" \
+            "android=${{ needs.android.result }}" \
+            "daemon=${{ needs.daemon.result }}"; do
+            job="${entry%%=*}"
+            result="${entry#*=}"
+            if [[ "$result" != "success" ]]; then
+              echo "::error::$job finished with result $result"
+              failed=1
+            fi
+          done
+          exit "$failed"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          edit_args=(--draft=false --title "Paseo Fork $FORK_VERSION")
+          if [[ "${FORK_IS_PRERELEASE}" != "true" ]]; then
+            edit_args+=(--latest)
+          fi
+          gh release edit "$FORK_TAG" --repo "$GITHUB_REPOSITORY" "${edit_args[@]}"
+          gh release view "$FORK_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'

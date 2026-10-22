@@ -18,7 +18,9 @@ on:
 
 jobs:
   deploy:
-    if: ${{ github.event_name != 'release' || (!github.event.release.prerelease && !github.event.release.draft) }}
+    # Fork releases must not deploy the upstream website. The fork never has the
+    # Cloudflare credentials, and a fork release should not touch paseo.sh.
+    if: ${{ github.repository == 'getpaseo/paseo' && (github.event_name != 'release' || (!github.event.release.prerelease && !github.event.release.draft)) }}
     runs-on: ubuntu-latest
 
     steps:

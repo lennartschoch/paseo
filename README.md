@@ -31,6 +31,11 @@
 
 <p align="center">One interface for Claude Code, Codex, Copilot, OpenCode, Pi, Antigravity, and Muse Code agents.</p>
 
+> **This is a fork of [getpaseo/paseo](https://github.com/getpaseo/paseo).** It tracks upstream
+> stable releases and carries fixes that are open upstream but not merged. See
+> [Fork improvements](#fork-improvements) for the list and [.fork/README.md](.fork/README.md) for
+> the release and update pipeline.
+
 <p align="center">
   <img src="https://paseo.sh/hero-mockup.png" alt="Paseo app screenshot" width="100%">
 </p>
@@ -51,6 +56,29 @@ Paseo is an open source agentic development environment for desktop, mobile, web
 - **Privacy-first:** Paseo doesn't have any telemetry, tracking, or forced log-ins.
 
 [Run parallel tasks in Paseo](https://paseo.sh/docs/parallel-development): start agents in separate worktrees, review their diffs, run each app, and check it in the built-in browser.
+
+## Fork improvements
+
+These fixes are merged into this fork's `main`; the upstream PRs are still open. The fork release
+pipeline is described in [.fork/README.md](.fork/README.md).
+
+| Improvement                                                    | What changes                                                                                          | Upstream PR                                                                        | Issue                                                  |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Restore the alternate screen on terminal re-attach             | A fullscreen TUI comes back on the alternate screen instead of being repainted into normal scrollback | [#7670](https://github.com/getpaseo/paseo/pull/7670)                               | [#3376](https://github.com/getpaseo/paseo/issues/3376) |
+| Give WebSocket upgrades a single owner                         | Service-proxy WebSockets (HMR, dev sockets) stop failing with `400` or corrupt frames                 | [#6812](https://github.com/getpaseo/paseo/pull/6812)                               | [#6813](https://github.com/getpaseo/paseo/issues/6813) |
+| Dedupe Android terminal keypresses against the IME text change | One key produces one character; Backspace stops getting suppressed after a desync                     | [#6749](https://github.com/getpaseo/paseo/pull/6749)                               | [#5176](https://github.com/getpaseo/paseo/issues/5176) |
+| Restore the configured scrollback on re-attach                 | Tab and workspace switches keep the pane's full history instead of 200 rows                           | [#6743](https://github.com/getpaseo/paseo/pull/6743)                               | [#6137](https://github.com/getpaseo/paseo/issues/6137) |
+| Replay mouse tracking after a terminal restore                 | Mouse-wheel scrolling keeps working after switching tabs in Claude Code                               | [#5908](https://github.com/getpaseo/paseo/pull/5908)                               | [#6646](https://github.com/getpaseo/paseo/issues/6646) |
+| Report a delivered Pi steer as accepted                        | A steer that lands as the turn settles is not retried, so the model does not see the text twice       | Fork commit [`f89cc6ffb`](https://github.com/lennartschoch/paseo/commit/f89cc6ffb) | —                                                      |
+
+## Fork releases
+
+Every fork release is built by GitHub Actions and published on
+[Releases](https://github.com/lennartschoch/paseo/releases). Desktop apps update themselves from
+that feed. Each release also carries the daemon tarball and the Android APK. A fork release is
+cut for every upstream release, stable or beta. See
+[.fork/README.md](.fork/README.md) for the versioning scheme, signing caveats, and the daily
+upstream sync.
 
 ## Sponsors
 
