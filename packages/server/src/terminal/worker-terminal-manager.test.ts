@@ -362,6 +362,48 @@ it.skipIf(isPlatform("win32"))(
   },
 );
 
+it.skipIf(isPlatform("win32"))(
+  "carries the normal buffer in a dual-buffer restore snapshot",
+  async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "worker-terminal-manager-dual-buffer-"));
+    temporaryDirs.push(cwd);
+    manager = createWorkerTerminalManager();
+    // Write to the normal buffer first, then enter the alternate screen. A restore
+    // must repaint both: the shell history underneath and the TUI on top.
+    const session = trackTerminal(
+      await manager.createTerminal({
+        workspaceId: "ws-test",
+        cwd,
+        ...nodeTerminalCommand(`
+      process.stdout.write("SHELL_HISTORY\\r\\n");
+      setTimeout(() => process.stdout.write("\\u001b[?1049hTUI"), 50);
+      setInterval(() => {}, 1000);
+    `),
+      }),
+    );
+
+    let ansi = "";
+    await waitForCondition(async () => {
+      const snapshot = await manager!.getTerminalState(session.id, { renderAnsi: true });
+      ansi = snapshot?.ansi ?? "";
+      return ansi.includes("TUI");
+    }, 10000);
+
+    const normalIndex = ansi.indexOf("SHELL_HISTORY");
+    const switchIndex = ansi.indexOf("\u001b[?1049h");
+    const tuiIndex = ansi.indexOf("TUI");
+    expect(normalIndex).toBeGreaterThanOrEqual(0);
+    expect(normalIndex).toBeLessThan(switchIndex);
+    expect(switchIndex).toBeLessThan(tuiIndex);
+
+    const snapshot = await manager.getTerminalState(session.id, { renderAnsi: true });
+    expect(snapshot?.state.normalScreen).toBeUndefined();
+    expect(snapshot?.state.grid).toEqual([]);
+    expect(snapshot?.state.scrollback).toEqual([]);
+  },
+  15000,
+);
+
 it("refreshes cached terminal title after worker title changes", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "worker-terminal-manager-title-"));
   temporaryDirs.push(cwd);

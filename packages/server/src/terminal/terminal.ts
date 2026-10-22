@@ -20,7 +20,7 @@ import {
   findExecutable,
   findExecutableWithoutProbing,
 } from "../executable-resolution/executable-resolution.js";
-import type { TerminalCell, TerminalState } from "@getpaseo/protocol/messages";
+import type { TerminalCell, TerminalScreenState, TerminalState } from "@getpaseo/protocol/messages";
 import { TerminalInputModeTracker } from "@getpaseo/protocol/terminal-input-mode";
 import { renderTerminalSnapshotToAnsi } from "@getpaseo/protocol/terminal-snapshot";
 import { TerminalActivityTracker } from "./activity/terminal-activity-tracker.js";
@@ -590,8 +590,9 @@ function prependPathEntry(currentPath: string, entry: string): string {
   return [entry, ...entries].join(delimiter);
 }
 
-function extractCell(terminal: TerminalType, row: number, col: number): TerminalCell {
-  const buffer = terminal.buffer.active;
+type TerminalBuffer = TerminalType["buffer"]["active"];
+
+function extractCell(buffer: TerminalBuffer, row: number, col: number): TerminalCell {
   const line = buffer.getLine(row);
   if (!line) {
     return { char: " ", fg: undefined, bg: undefined };
@@ -630,16 +631,15 @@ function extractCell(terminal: TerminalType, row: number, col: number): Terminal
   };
 }
 
-function extractGrid(terminal: TerminalType): TerminalCell[][] {
+function extractGrid(terminal: TerminalType, buffer: TerminalBuffer): TerminalCell[][] {
   const grid: TerminalCell[][] = [];
-  const buffer = terminal.buffer.active;
   // Visible viewport starts at baseY
   const baseY = buffer.baseY;
 
   for (let row = 0; row < terminal.rows; row++) {
     const rowCells: TerminalCell[] = [];
     for (let col = 0; col < terminal.cols; col++) {
-      rowCells.push(extractCell(terminal, baseY + row, col));
+      rowCells.push(extractCell(buffer, baseY + row, col));
     }
     grid.push(rowCells);
   }
@@ -649,10 +649,10 @@ function extractGrid(terminal: TerminalType): TerminalCell[][] {
 
 function extractScrollback(
   terminal: TerminalType,
+  buffer: TerminalBuffer,
   options?: { scrollbackLines?: number },
 ): TerminalCell[][] {
   const scrollback: TerminalCell[][] = [];
-  const buffer = terminal.buffer.active;
   // baseY is the first row of the visible viewport (0-indexed)
   // Lines 0 to baseY-1 are in scrollback, lines baseY onwards are visible
   const scrollbackLines = buffer.baseY;
@@ -706,36 +706,39 @@ function extractScrollback(
 // The snapshot carries the inverse, tmux-style flag — "this row continues onto the
 // next row" — so the client can rejoin and reflow logical lines. So row y's flag is
 // whether line y+1 is a wrapped continuation.
-function lineContinuesToNext(terminal: TerminalType, absoluteRow: number): boolean {
-  return terminal.buffer.active.getLine(absoluteRow + 1)?.isWrapped === true;
+function lineContinuesToNext(buffer: TerminalBuffer, absoluteRow: number): boolean {
+  return buffer.getLine(absoluteRow + 1)?.isWrapped === true;
 }
 
-function extractGridWrapped(terminal: TerminalType): boolean[] {
-  const baseY = terminal.buffer.active.baseY;
+function extractGridWrapped(terminal: TerminalType, buffer: TerminalBuffer): boolean[] {
+  const baseY = buffer.baseY;
   const wrapped: boolean[] = [];
   for (let row = 0; row < terminal.rows; row++) {
-    wrapped.push(lineContinuesToNext(terminal, baseY + row));
+    wrapped.push(lineContinuesToNext(buffer, baseY + row));
   }
   return wrapped;
 }
 
 function extractScrollbackWrapped(
-  terminal: TerminalType,
+  buffer: TerminalBuffer,
   options?: { scrollbackLines?: number },
 ): boolean[] {
-  const scrollbackLines = terminal.buffer.active.baseY;
+  const scrollbackLines = buffer.baseY;
   const startRow =
     typeof options?.scrollbackLines === "number"
       ? Math.max(0, scrollbackLines - options.scrollbackLines)
       : 0;
   const wrapped: boolean[] = [];
   for (let row = startRow; row < scrollbackLines; row++) {
-    wrapped.push(lineContinuesToNext(terminal, row));
+    wrapped.push(lineContinuesToNext(buffer, row));
   }
   return wrapped;
 }
 
-function extractCursorState(terminal: TerminalType): TerminalState["cursor"] {
+function extractCursorState(
+  terminal: TerminalType,
+  buffer: TerminalBuffer,
+): TerminalState["cursor"] {
   const coreService = (terminal as unknown as { _core?: { coreService?: Record<string, unknown> } })
     ._core?.coreService as
     | {
@@ -755,11 +758,35 @@ function extractCursorState(terminal: TerminalType): TerminalState["cursor"] {
   const hidden = Boolean(coreService?.isCursorHidden);
 
   return {
-    row: terminal.buffer.active.cursorY,
-    col: terminal.buffer.active.cursorX,
+    row: buffer.cursorY,
+    col: buffer.cursorX,
     ...(hidden ? { hidden: true } : {}),
     ...(normalizedCursorStyle ? { style: normalizedCursorStyle } : {}),
     ...(typeof cursorBlink === "boolean" ? { blink: cursorBlink } : {}),
+  };
+}
+
+function getBufferState(
+  terminal: TerminalType,
+  buffer: TerminalBuffer,
+  options?: TerminalStateSnapshotOptions,
+): TerminalScreenState {
+  return {
+    rows: terminal.rows,
+    cols: terminal.cols,
+    grid: extractGrid(terminal, buffer),
+    scrollback: extractScrollback(terminal, buffer, {
+      scrollbackLines: options?.scrollbackLines,
+    }),
+    cursor: extractCursorState(terminal, buffer),
+    ...(options?.includeWrapFlags
+      ? {
+          gridWrapped: extractGridWrapped(terminal, buffer),
+          scrollbackWrapped: extractScrollbackWrapped(buffer, {
+            scrollbackLines: options?.scrollbackLines,
+          }),
+        }
+      : {}),
   };
 }
 
@@ -1336,32 +1363,27 @@ export async function createTerminal(options: CreateTerminalOptions): Promise<Te
   }
 
   function getState(snapshotOptions?: TerminalStateSnapshotOptions): TerminalState {
-    return {
-      rows: terminal.rows,
-      cols: terminal.cols,
-      grid: extractGrid(terminal),
-      scrollback: extractScrollback(terminal, {
-        scrollbackLines: snapshotOptions?.scrollbackLines,
-      }),
-      cursor: extractCursorState(terminal),
-      ...(terminal.buffer.active.type === "alternate" ? { alternateScreen: true } : {}),
+    const activeBuffer = terminal.buffer.active;
+    const state: TerminalState = {
+      ...getBufferState(terminal, activeBuffer, snapshotOptions),
+      ...(activeBuffer.type === "alternate" ? { alternateScreen: true } : {}),
       ...(title ? { title } : {}),
-      ...(snapshotOptions?.includeWrapFlags
-        ? {
-            gridWrapped: extractGridWrapped(terminal),
-            scrollbackWrapped: extractScrollbackWrapped(terminal, {
-              scrollbackLines: snapshotOptions?.scrollbackLines,
-            }),
-          }
-        : {}),
     };
+    if (activeBuffer.type === "alternate" && snapshotOptions?.renderAnsi) {
+      // The active alternate buffer does not contain the shell history the TUI
+      // covered. Capture it too so a restore can paint it underneath the TUI
+      // before entering the alternate screen.
+      state.normalScreen = getBufferState(terminal, terminal.buffer.normal, snapshotOptions);
+    }
+    return state;
   }
 
   function getStateSnapshot(snapshotOptions?: TerminalStateSnapshotOptions): TerminalStateSnapshot {
     const state = getState(snapshotOptions);
     if (snapshotOptions?.renderAnsi) {
       return {
-        state: { ...state, grid: [], scrollback: [] },
+        // The ANSI carries both buffers. Do not send the cell grids over IPC.
+        state: { ...state, grid: [], scrollback: [], normalScreen: undefined },
         revision: stateRevision,
         ansi: renderTerminalSnapshotToAnsi(state),
       };

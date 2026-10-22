@@ -6406,6 +6406,16 @@ export const TerminalCursorSchema = z.object({
   blink: z.boolean().optional(),
 });
 
+export const TerminalScreenStateSchema = z.object({
+  rows: z.number(),
+  cols: z.number(),
+  grid: z.array(z.array(TerminalCellSchema)),
+  scrollback: z.array(z.array(TerminalCellSchema)),
+  cursor: TerminalCursorSchema,
+  gridWrapped: z.array(z.boolean()).optional(),
+  scrollbackWrapped: z.array(z.boolean()).optional(),
+});
+
 export const TerminalStateSchema = z.object({
   rows: z.number(),
   cols: z.number(),
@@ -6427,6 +6437,12 @@ export const TerminalStateSchema = z.object({
   // buffer leaves the client scrolling app repaints instead of the shell history.
   // Optional: absent (old daemon) restores into the normal buffer.
   alternateScreen: z.boolean().optional(),
+  // Present only on a restore snapshot taken while the alternate screen is
+  // active. It carries the normal buffer (grid, scrollback, cursor), so the
+  // client can repaint the shell history underneath the TUI before switching
+  // buffers. Without it, leaving the TUI exposes an empty normal buffer.
+  // Optional: old clients ignore it and keep the alternate-screen-only restore.
+  normalScreen: TerminalScreenStateSchema.optional(),
 });
 
 export const ListTerminalsResponseSchema = z.object({
@@ -7525,6 +7541,7 @@ export type TerminalInput = z.infer<typeof TerminalInputSchema>;
 export type TerminalCell = z.infer<typeof TerminalCellSchema>;
 export type TerminalCursorStyle = z.infer<typeof TerminalCursorStyleSchema>;
 export type TerminalCursor = z.infer<typeof TerminalCursorSchema>;
+export type TerminalScreenState = z.infer<typeof TerminalScreenStateSchema>;
 export type TerminalState = z.infer<typeof TerminalStateSchema>;
 export type CloseItemsRequest = z.infer<typeof CloseItemsRequestMessageSchema>;
 export type CloseItemsResponse = z.infer<typeof CloseItemsResponseSchema>;

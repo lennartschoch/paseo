@@ -66,6 +66,38 @@ describe("renderTerminalSnapshotToAnsi", () => {
     expect(ansi.indexOf("TUI")).toBeGreaterThan("\u001b[?1049h".length);
   });
 
+  it("restores the normal buffer before entering the alternate screen", () => {
+    // A TUI re-attach must leave the shell history underneath the TUI. The normal
+    // buffer is painted first, then ?1049h switches to the alternate screen, then
+    // the TUI grid is painted. Switching first would clear the alternate buffer and
+    // lose one of the two surfaces.
+    const normal: TerminalState = {
+      rows: 2,
+      cols: 10,
+      scrollback: [cells("$ npm run")],
+      grid: [cells("ready"), cells("")],
+      cursor: { row: 1, col: 0 },
+    };
+    const state: TerminalState = {
+      rows: 2,
+      cols: 10,
+      scrollback: [],
+      grid: [cells("TUI"), cells("")],
+      cursor: { row: 0, col: 3 },
+      alternateScreen: true,
+      normalScreen: normal,
+    };
+
+    const ansi = renderTerminalSnapshotToAnsi(state);
+    const normalIndex = ansi.indexOf("npm run");
+    const switchIndex = ansi.indexOf("\u001b[?1049h");
+    const tuiIndex = ansi.indexOf("TUI");
+
+    expect(normalIndex).toBeGreaterThanOrEqual(0);
+    expect(normalIndex).toBeLessThan(switchIndex);
+    expect(switchIndex).toBeLessThan(tuiIndex);
+  });
+
   it("leaves the buffer alone for a normal-screen snapshot", () => {
     const state: TerminalState = {
       rows: 1,

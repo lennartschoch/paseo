@@ -1,4 +1,4 @@
-import type { TerminalCell, TerminalState } from "./messages.js";
+import type { TerminalCell, TerminalScreenState, TerminalState } from "./messages.js";
 
 interface TerminalStyle {
   fg: number | undefined;
@@ -27,12 +27,18 @@ const DEFAULT_STYLE: TerminalStyle = {
 };
 
 export function renderTerminalSnapshotToAnsi(state: TerminalState): string {
-  // The client resets before painting a snapshot, so the buffer itself has to be
-  // re-established first: `?1049h` goes in ahead of the rows, not in the replay
-  // preamble that follows, because entering the alternate screen clears it.
-  // Without it an alternate-screen app (TUIs, editors) repaints into the normal
-  // buffer, where its frames reach scrollback and the wheel scrolls stale frames.
-  const screenAnsi = state.alternateScreen ? "\u001b[?1049h" : "";
+  const alternatePrefix = state.alternateScreen ? "\u001b[?1049h" : "";
+  // A dual-buffer restore paints the normal buffer first, then enters the
+  // alternate screen and paints the active TUI. Entering the alternate screen
+  // clears only the alternate buffer, so the shell history stays underneath and
+  // is visible again when the TUI exits.
+  if (state.alternateScreen && state.normalScreen) {
+    return `${renderScreenToAnsi(state.normalScreen)}${alternatePrefix}${renderScreenToAnsi(state)}`;
+  }
+  return `${alternatePrefix}${renderScreenToAnsi(state)}`;
+}
+
+function renderScreenToAnsi(state: TerminalScreenState): string {
   const rows = [...state.scrollback, ...state.grid];
   const wrapFlags = [...(state.scrollbackWrapped ?? []), ...(state.gridWrapped ?? [])];
   // Soft-wrapped lines can only be re-wrapped on resize when we know which rows
@@ -64,7 +70,7 @@ export function renderTerminalSnapshotToAnsi(state: TerminalState): string {
   if (!hasWrapInfo) {
     lines.push("\u001b[?7h");
   }
-  return screenAnsi + lines.join("");
+  return lines.join("");
 }
 
 function renderCursorPresentationToAnsi(cursor: TerminalState["cursor"]): string | null {
