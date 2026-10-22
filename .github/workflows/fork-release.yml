@@ -241,6 +241,16 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('packages/app/package.json', 'package-lock.json') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
       - name: Configure Android SDK
         shell: bash
         run: |
@@ -273,9 +283,26 @@ jobs:
           CI: "1"
         run: npx expo prebuild --platform android --clean --non-interactive --no-install
 
+      - name: Restrict Android ABI and enable Gradle cache
+        working-directory: packages/app/android
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -q '^reactNativeArchitectures=' gradle.properties; then
+            sed -i 's/^reactNativeArchitectures=.*/reactNativeArchitectures=arm64-v8a/' gradle.properties
+          else
+            echo 'reactNativeArchitectures=arm64-v8a' >> gradle.properties
+          fi
+          if ! grep -q '^org.gradle.caching=' gradle.properties; then
+            echo 'org.gradle.caching=true' >> gradle.properties
+          fi
+
       - name: Build release APK
         working-directory: packages/app/android
-        run: ./gradlew assembleRelease --no-daemon --stacktrace
+        run: >-
+          ./gradlew assembleRelease --no-daemon --stacktrace --build-cache --max-workers=4
+          -x lint -x lintVitalAnalyzeRelease -x lintVitalRelease
+          -x generateReleaseLintModel -x generateReleaseLintVitalModel
 
       - name: Name APK
         shell: bash
