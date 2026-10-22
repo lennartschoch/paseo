@@ -158,16 +158,24 @@ jobs:
       - name: Configure macOS signing
         shell: bash
         env:
-          CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          if [[ -z "${CSC_LINK:-}" ]]; then
+          if [[ -z "${APPLE_CERTIFICATE:-}" ]]; then
             echo "No signing certificate configured; building an unsigned macOS app."
             echo "PASEO_FORK_UNSIGNED_MAC=1" >> "$GITHUB_ENV"
             echo "CSC_IDENTITY_AUTO_DISCOVERY=false" >> "$GITHUB_ENV"
-          elif [[ -z "${APPLE_ID:-}" || -z "${APPLE_PASSWORD:-}" || -z "${APPLE_TEAM_ID:-}" ]]; then
+            exit 0
+          fi
+          # electron-builder only treats CSC_LINK as inline base64 above 2048
+          # characters (or with a data: prefix). A small self-signed .p12 can be
+          # shorter than that and then gets stat()ed as a path. Decode it to a
+          # real file and point CSC_LINK at that instead.
+          node -e 'require("node:fs").writeFileSync(process.env.RUNNER_TEMP + "/fork-cert.p12", Buffer.from(process.env.APPLE_CERTIFICATE, "base64"))'
+          echo "CSC_LINK=$RUNNER_TEMP/fork-cert.p12" >> "$GITHUB_ENV"
+          if [[ -z "${APPLE_ID:-}" || -z "${APPLE_PASSWORD:-}" || -z "${APPLE_TEAM_ID:-}" ]]; then
             echo "Certificate configured without notarization credentials; signing only."
             echo "PASEO_FORK_MAC_NOTARIZE=0" >> "$GITHUB_ENV"
           fi
@@ -177,7 +185,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EP_GH_IGNORE_TIME: true
-          CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
           CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
