@@ -47,7 +47,11 @@ mac:
   category: public.app-category.developer-tools
   icon: assets/icon.icns
   hardenedRuntime: true
-  notarize: true
+  # Notarization is off for fork builds: it needs a paid Developer ID (APPLE_ID + app-specific
+  # password + team) that this repo does not have, and a missing notary credential fails the
+  # macOS build. Builds are signed with the self-signed APPLE_CERTIFICATE, or unsigned when that
+  # secret is absent. First launch still needs the Gatekeeper bypass, see .fork/README.md.
+  notarize: false
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.inherit.plist
   extraResources:

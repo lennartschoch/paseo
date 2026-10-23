@@ -159,9 +159,6 @@ jobs:
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           if [[ -z "${APPLE_CERTIFICATE:-}" ]]; then
             echo "No signing certificate configured; building an unsigned macOS app."
@@ -175,10 +172,8 @@ jobs:
           # real file and point CSC_LINK at that instead.
           node -e 'require("node:fs").writeFileSync(process.env.RUNNER_TEMP + "/fork-cert.p12", Buffer.from(process.env.APPLE_CERTIFICATE, "base64"))'
           echo "CSC_LINK=$RUNNER_TEMP/fork-cert.p12" >> "$GITHUB_ENV"
-          if [[ -z "${APPLE_ID:-}" || -z "${APPLE_PASSWORD:-}" || -z "${APPLE_TEAM_ID:-}" ]]; then
-            echo "Certificate configured without notarization credentials; signing only."
-            echo "PASEO_FORK_MAC_NOTARIZE=0" >> "$GITHUB_ENV"
-          fi
+          # electron-builder.yml sets mac.notarize false; a certificate is the only
+          # macOS secret this repo has, so builds are signed at most.
 
       - name: Build macOS desktop release
         shell: bash
@@ -186,9 +181,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EP_GH_IGNORE_TIME: true
           CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           NODE_OPTIONS: --max-old-space-size=${{ matrix.node_heap_mb }}
         run: |
           set -euo pipefail
@@ -197,9 +189,6 @@ jobs:
           if [[ "${PASEO_FORK_UNSIGNED_MAC:-}" == "1" ]]; then
             printf '{"extends":"%s/packages/desktop/electron-builder.yml","mac":{"notarize":false,"identity":null,"hardenedRuntime":false}}' "$GITHUB_WORKSPACE" > "$RUNNER_TEMP/fork-unsigned-mac.json"
             args+=(--config "$RUNNER_TEMP/fork-unsigned-mac.json")
-          elif [[ "${PASEO_FORK_MAC_NOTARIZE:-}" == "0" ]]; then
-            printf '{"extends":"%s/packages/desktop/electron-builder.yml","mac":{"notarize":false}}' "$GITHUB_WORKSPACE" > "$RUNNER_TEMP/fork-signed-mac.json"
-            args+=(--config "$RUNNER_TEMP/fork-signed-mac.json")
           fi
           npm run build:desktop "${args[@]}"
 

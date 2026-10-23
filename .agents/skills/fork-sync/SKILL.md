@@ -32,7 +32,9 @@ Exit codes:
    incoming side is the upstream release.
 2. Keep both sides unless they genuinely disagree. The fork-only patches in `.fork/README.md` are
    the files to protect:
-   - `packages/desktop/electron-builder.yml` — publish owner/repo `lennartschoch/paseo`
+   - `packages/desktop/electron-builder.yml` — publish owner/repo `lennartschoch/paseo` and
+     `mac.notarize: false` (the fork has no Developer ID; upstream's `notarize: true` would fail the
+     macOS build)
    - `packages/app/native-release-version.js` — `-fork.N` handling and per-base versionCode
    - `packages/server/src/server/websocket-server.ts` — the `daemonVersion.includes("-fork.")`
      gate on `daemonSelfUpdate`
