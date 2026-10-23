@@ -42,8 +42,8 @@ carry the fork version while the tagged source stays at the upstream version.
 | Job             | Output                                                                                |
 | --------------- | ------------------------------------------------------------------------------------- |
 | `daemon`        | `paseo-daemon-<version>.tar.gz` — bundled `@getpaseo/*` tarballs plus an `install.sh` |
-| `desktop-linux` | AppImage, deb, rpm, tar.gz, and `latest-linux.yml`                                    |
-| `desktop-macos` | arm64 + x64 dmg/zip and the merged `latest-mac.yml`                                   |
+| `desktop-linux` | AppImage, deb, rpm, tar.gz, and the `<channel>-linux.yml` manifest                    |
+| `desktop-macos` | arm64 + x64 dmg/zip and the merged `<channel>-mac.yml` manifest                       |
 | `android`       | `paseo-fork-<version>-android.apk`, its SHA256, and `latest-android.json`             |
 
 Every build job applies the fork version from the tag before building. The release is created as
@@ -54,9 +54,17 @@ leaves the release as a draft; fix the build and re-run the workflow for that ta
 
 - **Desktop** reads the fork's own GitHub releases. `packages/desktop/electron-builder.yml` sets
   the publish owner/repo to `lennartschoch/paseo`, so `app-update.yml` baked into the app points
-  there. Release assets include the electron-updater manifests, and the releases are marked
-  non-prerelease so the `latest` channel finds them even though the version string contains
-  `-fork.`.
+  there.
+
+  The updater channel follows the upstream base, not the `-fork.` suffix. When the base version is
+  a prerelease (`0.13.0-beta.2`), `scripts/fork/release-env.mjs` marks the fork release as a GitHub
+  prerelease and builds both desktop jobs on the `beta` channel, so the manifests are
+  `beta-linux.yml` and `beta-mac.yml`. A stable base (`0.12.0`) uses `latest`. Both feed settings
+  are baked in at build time, so an installed app only ever offers updates from its own channel:
+  a beta fork build never updates to a stable fork build, or the reverse.
+
+  Because a prerelease is not the repository's "Latest" release, link beta builds by tag.
+
 - **Daemon** doesn't self-update on a fork. Fork builds advertise
   `features.daemonSelfUpdate: false`, because the upstream updater installs
   `@getpaseo/cli@latest` from npm and would replace the fork with upstream. Install daemon
