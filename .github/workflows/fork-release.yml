@@ -127,9 +127,9 @@ jobs:
           - runner: macos-14
             electron_arch: arm64
             node_heap_mb: 4096
-          - runner: macos-15-intel
-            electron_arch: x64
-            node_heap_mb: 8192
+          # No Intel (x64) build: nobody on the fork has an Intel Mac, so the
+          # extra runner buys nothing. Add a `macos-15-intel` / x64 entry back to
+          # restore it; the finalize step picks up the second manifest on its own.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 75
     permissions:
@@ -435,10 +435,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node scripts/merge-mac-manifest.mjs \
-            "mac-manifests/mac-manifest-arm64/${FORK_RELEASE_CHANNEL}-mac.yml" \
-            "mac-manifests/mac-manifest-x64/${FORK_RELEASE_CHANNEL}-mac.yml" \
-            "${FORK_RELEASE_CHANNEL}-mac.yml"
+          manifest="${FORK_RELEASE_CHANNEL}-mac.yml"
+          inputs=("mac-manifests/mac-manifest-arm64/$manifest")
+          x64_manifest="mac-manifests/mac-manifest-x64/$manifest"
+          if [[ -f "$x64_manifest" ]]; then
+            inputs+=("$x64_manifest")
+          fi
+          node scripts/merge-mac-manifest.mjs "${inputs[@]}" "$manifest"
           gh release upload "$FORK_TAG" "${FORK_RELEASE_CHANNEL}-mac.yml" --clobber --repo "$GITHUB_REPOSITORY"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

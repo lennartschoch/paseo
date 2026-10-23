@@ -6,14 +6,16 @@ import { isMainModule } from "./is-main-module.mjs";
 // kernel version. Darwin 22 is macOS 13 Ventura.
 export const MACOS_MINIMUM_DARWIN_VERSION = "22.0.0";
 
-export function mergeMacManifest(arm64Path, x64Path, outputPath) {
-  const arm64 = load(fs.readFileSync(arm64Path, "utf8"));
-  const x64 = load(fs.readFileSync(x64Path, "utf8"));
-  const files = [...(arm64.files ?? []), ...(x64.files ?? [])].filter(
-    (file, index, all) => all.findIndex((entry) => entry.url === file.url) === index,
-  );
+// Last argument is the output path, everything before it is an input manifest.
+// A single input is valid: a build that only ships one macOS architecture (the
+// fork builds arm64 only) merges its manifest down to itself.
+export function mergeMacManifest(manifestPaths, outputPath) {
+  const manifests = manifestPaths.map((filePath) => load(fs.readFileSync(filePath, "utf8")));
+  const files = manifests
+    .flatMap((manifest) => manifest.files ?? [])
+    .filter((file, index, all) => all.findIndex((entry) => entry.url === file.url) === index);
   const output = dump(
-    { ...arm64, files, minimumSystemVersion: MACOS_MINIMUM_DARWIN_VERSION },
+    { ...manifests[0], files, minimumSystemVersion: MACOS_MINIMUM_DARWIN_VERSION },
     { lineWidth: -1, noRefs: true },
   );
   fs.writeFileSync(outputPath, output);
@@ -21,9 +23,11 @@ export function mergeMacManifest(arm64Path, x64Path, outputPath) {
 }
 
 if (isMainModule(import.meta.url)) {
-  const [, , arm64Path, x64Path, outputPath] = process.argv;
-  if (!arm64Path || !x64Path || !outputPath) {
-    throw new Error("Usage: node scripts/merge-mac-manifest.mjs <arm64.yml> <x64.yml> <out.yml>");
+  const args = process.argv.slice(2);
+  const manifestPaths = args.slice(0, -1);
+  const outputPath = args.at(-1);
+  if (!outputPath || manifestPaths.length === 0) {
+    throw new Error("Usage: node scripts/merge-mac-manifest.mjs <arm64.yml> [x64.yml] <out.yml>");
   }
-  process.stdout.write(mergeMacManifest(arm64Path, x64Path, outputPath));
+  process.stdout.write(mergeMacManifest(manifestPaths, outputPath));
 }

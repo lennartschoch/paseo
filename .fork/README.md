@@ -43,10 +43,13 @@ carry the fork version while the tagged source stays at the upstream version.
 | --------------- | ------------------------------------------------------------------------------------- |
 | `daemon`        | `paseo-daemon-<version>.tar.gz` — bundled `@getpaseo/*` tarballs plus an `install.sh` |
 | `desktop-linux` | AppImage, deb, rpm, tar.gz, and the `<channel>-linux.yml` manifest                    |
-| `desktop-macos` | arm64 + x64 dmg/zip and the merged `<channel>-mac.yml` manifest                       |
+| `desktop-macos` | arm64 dmg/zip and the merged `<channel>-mac.yml` manifest (no Intel build)            |
 | `android`       | `paseo-fork-<version>-android.apk`, its SHA256, and `latest-android.json`             |
 
-Every build job applies the fork version from the tag before building. The release is created as
+Every build job applies the fork version from the tag before building. macOS builds arm64 only
+(`.github/workflows/fork-release.yml` matrix); no Intel device uses the fork, so the `macos-15-intel`
+runner would just burn time. The `<channel>-mac.yml` merge accepts one manifest or two, so re-adding
+an x64 matrix entry is all it takes to ship Intel again. The release is created as
 a draft and only published after every job succeeds. A failed platform
 leaves the release as a draft; fix the build and re-run the workflow for that tag.
 
