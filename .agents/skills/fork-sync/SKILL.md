@@ -61,7 +61,7 @@ gh run list --repo lennartschoch/paseo --workflow fork-release.yml --limit 3
 gh release view fork-v<version> --repo lennartschoch/paseo --json isDraft,isPrerelease,assets
 ```
 
-The release stays draft until Linux, macOS (both arches), Android, and the daemon all succeed. If
+The release stays draft until Linux, macOS (arm64 only), Android, and the daemon all succeed. If
 a job fails, read that job's log. Fix the cause and re-run the workflow for the same tag; never
 reuse a version for a changed build.
 
