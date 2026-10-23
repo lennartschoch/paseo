@@ -102,9 +102,11 @@ What the certificate secrets control is the signing identity:
   every build gives that requirement a stable leaf hash.
   - Trust the certificate on each Mac once: Keychain Access → import → **Always Trust**, or
     `security add-trusted-cert -d -r trustRoot -k ~/Library/Keychains/login.keychain-db <cert>`.
-  - A key that electron-builder cannot select is skipped silently — the job logs
-    `cannot find valid "Developer ID Application" identity ... 0 identities found` and still succeeds
-    with an unsigned app. Check that line in the `desktop-macos` job after changing the certificate.
+  - Export the **certificate and its private key**. A certificate-only `.p12` imports no identity;
+    the workflow imports `APPLE_CERTIFICATE` into a temp keychain, trusts the leaf on the runner,
+    and fails with `APPLE_CERTIFICATE has no usable code-signing identity` rather than falling back
+    to the ad-hoc signature electron-builder would otherwise pick — Squirrel.Mac cannot update an
+    ad-hoc build, because the running app's designated requirement is pinned to its own cdhash.
   - Test two consecutive releases before relying on this. If Squirrel rejects the self-signed
     update, use the manual path below.
 - **Developer ID:** the certificate signs the app; it stays unsigned-by-notary unless you also flip
