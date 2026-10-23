@@ -170,4 +170,20 @@ describe("native terminal scrollback retention", () => {
       before.scroll.bottomViewport.lastRow,
     );
   });
+
+  test("an alternate screen keeps no client scrollback, so gestures must be reported", async () => {
+    const terminal = createNativeHeadlessTerminal({ rows: ROWS, cols: COLS, scrollbackLines: 10 });
+
+    await terminal.write("\x1b[?1049h");
+    await terminal.write("line\r\n".repeat(ROWS * 3));
+
+    const model = createNativeTerminalScreenModel({ terminal });
+    const bottom = model.sync({ visibleRows: ROWS });
+    const scrolled = model.scrollUp({ rows: 5, visibleRows: ROWS });
+
+    // The app owns this history; the client's own viewport cannot move.
+    expect(terminal.isAlternateBuffer()).toEqual(true);
+    expect(scrolled.scroll.mode).toBe("following");
+    expect(scrolled.viewport.firstRow).toEqual(bottom.viewport.firstRow);
+  });
 });

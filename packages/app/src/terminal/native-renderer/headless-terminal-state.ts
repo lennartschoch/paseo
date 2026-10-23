@@ -19,12 +19,30 @@ export interface NativeHeadlessTerminalOptions {
   scrollbackLines?: number;
 }
 
+export interface NativeHeadlessTerminalWheelInput {
+  col: number;
+  row: number;
+  direction: TerminalWheelDirection;
+}
+
+export type TerminalWheelDirection = "up" | "down";
+
 export interface NativeHeadlessTerminal {
   write(data: NativeTerminalWriteData): Promise<void>;
   getState(): TerminalState;
   getViewportState(input?: TerminalViewportStateInput): TerminalViewportState;
   getInputModeState(): NativeHeadlessTerminalInputModeState;
   getBufferBounds(): TerminalBufferBounds;
+  isAlternateBuffer(): boolean;
+  reportsMouseEvents(): boolean;
+  /**
+   * Reports one wheel notch at a grid cell through xterm's own mouse service, so the
+   * encoding matches the tracking mode the app requested. Returns the bytes to send to
+   * the app, or null when the emulator reported nothing — either the app is not
+   * reporting the mouse, rejected the event, or asked for a byte encoding this client
+   * cannot forward as text.
+   */
+  reportWheel(input: NativeHeadlessTerminalWheelInput): string | null;
   getBufferWindow(input: TerminalBufferWindowInput): TerminalBufferWindow;
   resize(input: { rows: number; cols: number }): void;
   reset(): void;
@@ -79,6 +97,34 @@ export interface TerminalViewportState {
   cursor: TerminalState["cursor"];
 }
 
+// xterm reports a wheel notch as button 4 with the direction in `action`; the SGR encoder
+// turns those into the 64 (up) and 65 (down) codes.
+const XTERM_WHEEL_BUTTON = 4;
+const XTERM_WHEEL_UP_ACTION = 0;
+const XTERM_WHEEL_DOWN_ACTION = 1;
+
+interface XtermMouseReportEvent {
+  col: number;
+  row: number;
+  x: number;
+  y: number;
+  button: number;
+  action: number;
+  ctrl: boolean;
+  alt: boolean;
+  shift: boolean;
+}
+
+// `MouseStateService` in @xterm/headless. The app resolves the SGR/legacy encoders
+// themselves, so a report never has to be re-implemented here.
+interface XtermMouseStateService {
+  areMouseEventsActive?: unknown;
+  isDefaultEncoding?: unknown;
+  isPixelEncoding?: unknown;
+  restrictMouseEvent?: (event: XtermMouseReportEvent) => boolean;
+  encodeMouseEvent?: (event: XtermMouseReportEvent) => string;
+}
+
 interface XtermCoreService {
   decPrivateModes?: {
     applicationCursorKeys?: unknown;
@@ -92,6 +138,7 @@ interface XtermCoreService {
 interface HeadlessTerminalWithCore {
   _core?: {
     coreService?: XtermCoreService;
+    mouseStateService?: XtermMouseStateService;
     _bufferService?: {
       buffer?: {
         lines?: {
@@ -223,6 +270,12 @@ function rowRange(firstRow: number, rowCount: number): TerminalRowRange {
     firstRow,
     lastRow: Math.max(firstRow, firstRow + Math.max(1, rowCount) - 1),
   };
+}
+
+function readMouseStateService(
+  terminal: HeadlessTerminalInstance,
+): XtermMouseStateService | undefined {
+  return (terminal as unknown as HeadlessTerminalWithCore)._core?.mouseStateService;
 }
 
 function extractBufferBounds(
@@ -393,6 +446,46 @@ export function createNativeHeadlessTerminal(
     },
     getInputModeState(): NativeHeadlessTerminalInputModeState {
       return extractInputModeState(terminal);
+    },
+    isAlternateBuffer(): boolean {
+      return terminal.buffer.active.type === "alternate";
+    },
+    reportsMouseEvents(): boolean {
+      return readMouseStateService(terminal)?.areMouseEventsActive === true;
+    },
+    reportWheel({ col, row, direction }: NativeHeadlessTerminalWheelInput): string | null {
+      const mouseState = readMouseStateService(terminal);
+      if (!mouseState || mouseState.areMouseEventsActive !== true) {
+        return null;
+      }
+      // The legacy encoding is three raw bytes, which cannot go through the text input
+      // channel; the pixel encoding needs device pixels the gesture layer does not own.
+      if (mouseState.isDefaultEncoding === true || mouseState.isPixelEncoding === true) {
+        return null;
+      }
+      const restrictMouseEvent = mouseState.restrictMouseEvent;
+      const encodeMouseEvent = mouseState.encodeMouseEvent;
+      if (typeof restrictMouseEvent !== "function" || typeof encodeMouseEvent !== "function") {
+        return null;
+      }
+      const event: XtermMouseReportEvent = {
+        // Reports are 1-based; the grid coordinates the gesture resolves are not.
+        col: col + 1,
+        row: row + 1,
+        x: 0,
+        y: 0,
+        button: XTERM_WHEEL_BUTTON,
+        action: direction === "up" ? XTERM_WHEEL_UP_ACTION : XTERM_WHEEL_DOWN_ACTION,
+        ctrl: false,
+        alt: false,
+        shift: false,
+      };
+      // The active protocol decides whether it reports a wheel at all (DEC 9 does not).
+      if (!restrictMouseEvent.call(mouseState, event)) {
+        return null;
+      }
+      const encoded = encodeMouseEvent.call(mouseState, event);
+      return typeof encoded === "string" && encoded.length > 0 ? encoded : null;
     },
     getBufferBounds(): TerminalBufferBounds {
       return extractBufferBounds(terminal, coordinateEpoch, getActiveCoordinateStorage().oldestRow);

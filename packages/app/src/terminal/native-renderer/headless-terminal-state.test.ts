@@ -159,4 +159,43 @@ describe("native headless terminal state", () => {
       { char: "B", width: 1 },
     ]);
   });
+
+  test("tracks the active buffer as alternate screens are entered and left", async () => {
+    const terminal = createNativeHeadlessTerminal({ rows: 4, cols: COLS });
+
+    expect(terminal.isAlternateBuffer()).toEqual(false);
+    await terminal.write("\x1b[?1049h");
+    expect(terminal.isAlternateBuffer()).toEqual(true);
+    await terminal.write("\x1b[?1049l");
+    expect(terminal.isAlternateBuffer()).toEqual(false);
+  });
+
+  test("reports wheel events in the encoding the app asked for", async () => {
+    const terminal = createNativeHeadlessTerminal({ rows: 10, cols: COLS });
+
+    expect(terminal.reportsMouseEvents()).toEqual(false);
+    expect(terminal.reportWheel({ col: 2, row: 3, direction: "up" })).toBeNull();
+
+    await terminal.write("\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1004h\x1b[?1006h");
+
+    expect(terminal.reportsMouseEvents()).toEqual(true);
+    expect(terminal.reportWheel({ col: 2, row: 3, direction: "up" })).toEqual("\x1b[<64;3;4M");
+    expect(terminal.reportWheel({ col: 2, row: 3, direction: "down" })).toEqual("\x1b[<65;3;4M");
+
+    await terminal.write("\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l");
+
+    expect(terminal.reportsMouseEvents()).toEqual(false);
+    expect(terminal.reportWheel({ col: 0, row: 0, direction: "up" })).toBeNull();
+  });
+
+  test("does not report a byte-encoded mouse event as text", async () => {
+    const terminal = createNativeHeadlessTerminal({ rows: 10, cols: COLS });
+
+    // DEC 1000 without DEC 1006 selects xterm's legacy byte encoding, which cannot be
+    // forwarded over the text input channel. The gesture then falls back to scrolling.
+    await terminal.write("\x1b[?1000h");
+
+    expect(terminal.reportsMouseEvents()).toEqual(true);
+    expect(terminal.reportWheel({ col: 0, row: 0, direction: "up" })).toBeNull();
+  });
 });
