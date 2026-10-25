@@ -181,7 +181,7 @@ run("git", ["fetch", args.forkRemote, "--tags"], { cwd: root });
 let version = "";
 if (!args.noRelease) {
   const baseVersion = stripForkSuffix(readRootVersion(root));
-  const buildNumber = nextForkNumber(root, baseVersion);
+  const buildNumber = nextForkNumber(root);
   version = `${baseVersion}-fork.${buildNumber}`;
   tagRelease(root, version, `Paseo fork ${version} (upstream ${tag})`);
 }

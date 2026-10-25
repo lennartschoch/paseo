@@ -35,7 +35,7 @@ Exit codes:
    - `packages/desktop/electron-builder.yml` — publish owner/repo `lennartschoch/paseo` and
      `mac.notarize: false` (the fork has no Developer ID; upstream's `notarize: true` would fail the
      macOS build)
-   - `packages/app/native-release-version.js` — `-fork.N` handling and per-base versionCode
+   - `packages/app/native-release-version.js` — `-fork.N` handling and the fork versionCode window
    - `packages/server/src/server/websocket-server.ts` — the `daemonVersion.includes("-fork.")`
      gate on `daemonSelfUpdate`
    - `.github/workflows/deploy-website.yml` — the `github.repository == 'getpaseo/paseo'` guard

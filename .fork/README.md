@@ -13,8 +13,14 @@ Upstream `getpaseo/paseo` is the `origin` remote. The fork is `fork`.
   the history is append-only so the fix commits stay reachable.
 - `main` carries the upstream version. A fork version lives only in a tag, not in a version-bump
   commit. The release workflow applies it at build time.
-- Fork releases are tagged `fork-v<base>-fork.<n>`, where `<n>` starts at 1 for every upstream
-  base. Example: `0.12.0-fork.1`, then `0.13.0-fork.1` when upstream ships `v0.13.0`.
+- Fork releases are tagged `fork-v<base>-fork.<n>`. `<n>` is one build counter across all bases:
+  after `0.13.0-beta.2-fork.3`, the first build of `v0.13.0` is `0.13.0-fork.4`. It never restarts
+  at 1 for a new base, because Android derives `versionCode` from the base version and this number
+  only (the `-beta.N` stage does not reach it). A per-base counter put a stable build below the
+  beta it followed, and Android refused the update as a downgrade.
+- The native version name of a fork build is the whole version, `-fork.<n>` included, so
+  `0.13.0-beta.2-fork.3` and `0.13.0-fork.4` are distinguishable on the device. Upstream builds
+  publish `X.Y.Z` alone.
 - The `fork-v` prefix is deliberate: upstream workflows trigger on `v*`, so a fork tag cannot
   start an upstream EAS, Docker, or release-notes run.
 
@@ -46,7 +52,10 @@ carry the fork version while the tagged source stays at the upstream version.
 | `desktop-macos` | arm64 dmg/zip and the merged `<channel>-mac.yml` manifest (no Intel build)            |
 | `android`       | `paseo-fork-<version>-android.apk`, its SHA256, and `latest-android.json`             |
 
-Every build job applies the fork version from the tag before building. macOS builds arm64 only
+Every build job applies the fork version from the tag before building. The `create-release` job
+fails before anything is built if `scripts/fork/check-version-order.mjs` finds an earlier fork
+release whose Android `versionCode` is not below this one.
+macOS builds arm64 only
 (`.github/workflows/fork-release.yml` matrix); no Intel device uses the fork, so the `macos-15-intel`
 runner would just burn time. The `<channel>-mac.yml` merge accepts one manifest or two, so re-adding
 an x64 matrix entry is all it takes to ship Intel again. The release is created as
@@ -88,6 +97,12 @@ leaves the release as a draft; fix the build and re-run the workflow for that ta
 - **Android** is sideloaded. `latest-android.json` points at the newest APK and carries the
   monotonic `versionCode`. Installing a new fork APK over the previous one works because every
   fork build shares the same debug signing key and increases `versionCode`.
+  - `fork-v0.13.0-fork.1` predates the global build counter and coded to 13000001, below
+    `0.13.0-beta.2-fork.3` at 13000003. That APK will not install over the beta; uninstall it or
+    use a later fork build.
+  - `scripts/fork/lib.mjs` `nextForkNumber()` counts every `fork-v*-fork.N` tag, so both the
+    counter and `versionCode` stay monotonic. `packages/app/native-release-version.js` reserves
+    four digits of the code for the build number (base times 10,000 plus the build).
 
 ## Signing
 

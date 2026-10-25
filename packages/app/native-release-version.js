@@ -1,5 +1,7 @@
 const versionPattern = /^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?(?:-fork\.(\d+))?$/;
 const stableIosBuildSlot = 999;
+const forkBuildSlots = 10_000;
+const maxForkBuild = 9_999;
 const FDROID_ABI_VERSION_CODE_SUFFIXES = {
   "armeabi-v7a": 1,
   "arm64-v8a": 2,
@@ -37,18 +39,23 @@ function getNativeReleaseVersion(version) {
   }
 
   if (forkNumber !== null) {
-    if (!Number.isSafeInteger(forkNumber) || forkNumber < 1 || forkNumber > 999) {
-      throw new Error(`Fork build number must be between 1 and 999: ${version}`);
+    if (!Number.isSafeInteger(forkNumber) || forkNumber < 1 || forkNumber > maxForkBuild) {
+      throw new Error(`Fork build number must be between 1 and ${maxForkBuild}: ${version}`);
     }
-    // Base version code times 1000 plus the per-base fork number. The base
-    // component rises with every upstream release, so the fork code stays
-    // monotonic across bases without a global counter.
-    const forkVersionCode = versionCode * 1_000 + forkNumber;
+    // Base version code times the fork build window plus the fork build number.
+    // The `-beta.N` stage is deliberately absent: `0.13.0-beta.2` and `0.13.0`
+    // share a base version code, so the fork build number has to order them,
+    // which means it must keep rising across bases instead of restarting at 1.
+    // See nextForkNumber() in scripts/fork/lib.mjs.
+    const forkVersionCode = versionCode * forkBuildSlots + forkNumber;
     if (forkVersionCode * 10 + 9 > 2_100_000_000) {
       throw new Error(`Fork Android versionCode is out of range: ${forkVersionCode}`);
     }
     return {
-      appVersion: `${major}.${minor}.${patch}`,
+      // The base version alone is the same string for every fork build of one
+      // upstream release, and identical for a beta and the stable it preceded,
+      // so fork builds publish the full version as the native version name.
+      appVersion: version,
       androidVersionCode: forkVersionCode,
       iosBuildNumber: String(forkVersionCode * 1_000 + stableIosBuildSlot),
     };

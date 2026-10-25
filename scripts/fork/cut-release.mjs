@@ -52,7 +52,7 @@ assertCleanWorktree(root);
 run("git", ["fetch", args.forkRemote, "--tags"], { cwd: root });
 
 const baseVersion = stripForkSuffix(readRootVersion(root));
-const buildNumber = nextForkNumber(root, baseVersion);
+const buildNumber = nextForkNumber(root);
 const version = `${baseVersion}-fork.${buildNumber}`;
 
 tagRelease(root, version, `Paseo fork ${version} (upstream ${baseVersion})`);

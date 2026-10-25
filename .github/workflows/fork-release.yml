@@ -41,6 +41,13 @@ jobs:
           node scripts/fork/release-env.mjs --tag "$SOURCE_TAG" | tee -a "$GITHUB_ENV"
           grep '^FORK_VERSION=' "$GITHUB_ENV" | tail -1 | cut -d= -f2 | sed 's/^/fork-version=/' >> "$GITHUB_OUTPUT"
 
+      - name: Check fork versioning
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test scripts/fork/version-utils.test.mjs scripts/fork/lib.test.mjs
+          node scripts/fork/check-version-order.mjs --tag "$SOURCE_TAG"
+
       - name: Create or reuse draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -136,19 +136,18 @@ export function mergeHeadExists(root) {
   }
 }
 
-export function nextForkNumber(root, baseVersion) {
-  const prefix = `fork-v${baseVersion}-fork.`;
-  const tags = git(root, ["tag", "--list", `${prefix}*`])
-    .split("\n")
-    .filter(Boolean);
-
+/**
+ * Next fork build number. Counts every `fork-v*-fork.N` tag, across upstream
+ * bases, not just the current base: Android derives versionCode from the base
+ * version alone, so a per-base counter restarting at 1 produces a lower
+ * versionCode than the last beta fork build of the same base and the install
+ * is refused as a downgrade.
+ */
+export function nextForkNumber(root) {
   let highest = 0;
-  for (const tag of tags) {
+  for (const tag of listForkTags(root)) {
     try {
-      const parsed = parseForkTag(tag);
-      if (parsed.baseVersion === baseVersion) {
-        highest = Math.max(highest, parsed.buildNumber);
-      }
+      highest = Math.max(highest, parseForkTag(tag).buildNumber);
     } catch {
       // Ignore malformed tags that happen to share the prefix.
     }
