@@ -11,9 +11,9 @@ const capableInput = {
 
 describe("terminal restore options", () => {
   it("omits restore options for daemons without terminal restore modes", () => {
-    expect(
+    expect(() =>
       resolveTerminalRestoreOptions({ ...capableInput, supportsTerminalRestoreModes: false }),
-    ).toBeUndefined();
+    ).toThrow("Update the host to view terminals.");
   });
 
   it("requests the pane's configured scrollback rather than a fixed window", () => {
@@ -48,4 +48,15 @@ describe("terminal restore options", () => {
       scrollbackLines: 0,
     });
   });
+});
+
+it.each([0, 5, 400, 10000])("requests exactly %s configured history rows", (scrollbackLines) => {
+  expect(
+    resolveTerminalRestoreOptions({
+      supportsTerminalRestoreModes: true,
+      scrollbackLines,
+      canClaimSize: false,
+      size: null,
+    }),
+  ).toEqual({ mode: "visible-snapshot", scrollbackLines });
 });

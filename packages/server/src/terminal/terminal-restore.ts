@@ -1,12 +1,11 @@
+import type { z } from "zod";
 import type { SubscribeTerminalRequest } from "@getpaseo/protocol/messages";
 import {
   TerminalStreamOpcode,
-  encodeTerminalSnapshotPayload,
+  type TerminalReplayMetadataSchema,
   encodeTerminalStreamFrame,
 } from "@getpaseo/protocol/binary-frames/index";
-import { renderTerminalSnapshotToAnsi } from "@getpaseo/protocol/terminal-snapshot";
-import { TERMINAL_MODEL_SCROLLBACK_LINES } from "./terminal-model-limits.js";
-import type { TerminalStateSnapshot, TerminalStateSnapshotOptions } from "./terminal.js";
+import type { TerminalReplaySink, TerminalReplayOptions } from "./terminal-replay.js";
 
 export const MAX_TERMINAL_OUTPUT_FRAME_BYTES = 256 * 1024;
 
@@ -20,68 +19,90 @@ export const MAX_CLIENT_BUFFERED_BYTES = 4 * 1024 * 1024;
 // Fallback for a client that asks for a visible snapshot without naming a line
 // count. Current clients send their configured scrollback.
 const DEFAULT_VISIBLE_RESTORE_SCROLLBACK_LINES = 200;
-// The model cannot hand out more rows than it keeps, and asking for more would
-// only repeat rows in a larger restore frame.
-const MAX_VISIBLE_RESTORE_SCROLLBACK_LINES = TERMINAL_MODEL_SCROLLBACK_LINES;
+// The unchunked restore frame is a single payload, so the cap is what a legacy
+// client can absorb in one go.
+const MAX_VISIBLE_RESTORE_SCROLLBACK_LINES = 500;
 
 export type TerminalRestoreOptions = NonNullable<SubscribeTerminalRequest["restore"]>;
 
-export type TerminalSubscriptionSnapshotMode = "state" | "ready";
-
-export function resolveTerminalSubscriptionSnapshotMode(
-  restore: TerminalRestoreOptions | undefined,
-): TerminalSubscriptionSnapshotMode {
-  return restore ? "ready" : "state";
-}
-
 export function resolveRestoreAfterOutputOverflow(
   restore: TerminalRestoreOptions | undefined,
-): TerminalRestoreOptions | undefined {
-  if (restore?.mode === "live") {
-    return { mode: "visible-snapshot" };
-  }
-  return restore;
+): TerminalRestoreOptions {
+  return {
+    mode: "visible-snapshot",
+    scrollbackLines: Math.min(
+      restore?.scrollbackLines ?? MAX_VISIBLE_RESTORE_SCROLLBACK_LINES,
+      MAX_VISIBLE_RESTORE_SCROLLBACK_LINES,
+    ),
+  };
 }
 
-export function resolveTerminalRestoreSnapshotOptions(
-  restore: TerminalRestoreOptions,
-): TerminalStateSnapshotOptions | null | undefined {
+export function resolveTerminalRestoreSnapshotOptions({
+  restore,
+  chunked,
+}: {
+  restore: TerminalRestoreOptions;
+  chunked: boolean;
+}): TerminalReplayOptions | null | undefined {
   if (restore.mode === "live") {
     return null;
   }
-  if (restore.mode === "visible-snapshot") {
-    return {
-      scrollbackLines: resolveVisibleRestoreScrollbackLines(restore.scrollbackLines),
-    };
+  if (restore.mode === "full-snapshot") {
+    return chunked ? { scrollbackLines: restore.scrollbackLines } : undefined;
   }
-  return undefined;
+  const scrollbackLines = restore.scrollbackLines ?? DEFAULT_VISIBLE_RESTORE_SCROLLBACK_LINES;
+  return {
+    scrollbackLines: chunked
+      ? scrollbackLines
+      : Math.min(scrollbackLines, MAX_VISIBLE_RESTORE_SCROLLBACK_LINES),
+  };
 }
 
-export function encodeLegacyTerminalSnapshotFrame(input: {
-  slot: number;
-  snapshot: TerminalStateSnapshot;
-}): Uint8Array {
-  return encodeTerminalStreamFrame({
-    opcode: TerminalStreamOpcode.Snapshot,
-    slot: input.slot,
-    payload: encodeTerminalSnapshotPayload(input.snapshot.state),
-  });
-}
-
-export function encodeTerminalRestoreFrame(input: {
-  slot: number;
-  snapshot: TerminalStateSnapshot;
-}): Uint8Array {
+export function encodeTerminalRestoreFrame(input: { slot: number; data: Uint8Array }): Uint8Array {
   return encodeTerminalStreamFrame({
     opcode: TerminalStreamOpcode.Restore,
     slot: input.slot,
-    payload: input.snapshot.ansi ?? renderTerminalSnapshotToAnsi(input.snapshot.state),
+    payload: input.data,
   });
 }
 
-function resolveVisibleRestoreScrollbackLines(value: number | undefined): number {
-  if (typeof value !== "number") {
-    return DEFAULT_VISIBLE_RESTORE_SCROLLBACK_LINES;
-  }
-  return Math.min(Math.max(0, value), MAX_VISIBLE_RESTORE_SCROLLBACK_LINES);
+/** The daemon's only old-app adapter. Capable delivery never assembles the replay. */
+export function createTerminalRestoreDelivery(input: {
+  slot: number;
+  chunked: boolean;
+  send(frame: Uint8Array): void;
+}): TerminalReplaySink {
+  // COMPAT(terminalSingleRestore): added after v0.14.0; remove after 2027-04-30 when client floor supports chunked replay.
+  const legacyChunks: Uint8Array[] = [];
+  return (event) => {
+    if (!input.chunked) {
+      if (event.type === "data") legacyChunks.push(event.data);
+      if (event.type === "end")
+        input.send(
+          encodeTerminalRestoreFrame({
+            slot: input.slot,
+            data: Buffer.concat(legacyChunks),
+          }),
+        );
+      return;
+    }
+    const opcodes = {
+      begin: TerminalStreamOpcode.ReplayBegin,
+      data: TerminalStreamOpcode.ReplayData,
+      end: TerminalStreamOpcode.ReplayEnd,
+    };
+    let payload: string | Uint8Array | undefined;
+    if (event.type === "begin") {
+      const begin = {
+        rows: event.metadata.rows,
+        cols: event.metadata.cols,
+        retainedHistoryLines: event.metadata.retainedHistoryLines,
+      } satisfies z.infer<typeof TerminalReplayMetadataSchema>;
+      payload = JSON.stringify(begin);
+    }
+    if (event.type === "data") payload = event.data;
+    input.send(
+      encodeTerminalStreamFrame({ slot: input.slot, opcode: opcodes[event.type], payload }),
+    );
+  };
 }

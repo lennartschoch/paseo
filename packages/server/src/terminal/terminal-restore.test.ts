@@ -4,65 +4,45 @@ import {
   TerminalStreamOpcode,
   decodeTerminalStreamFrame,
 } from "@getpaseo/protocol/binary-frames/index";
-import type { TerminalCell, TerminalState } from "@getpaseo/protocol/messages";
 import {
+  createTerminalRestoreDelivery,
   encodeTerminalRestoreFrame,
   resolveRestoreAfterOutputOverflow,
   resolveTerminalRestoreSnapshotOptions,
-  resolveTerminalSubscriptionSnapshotMode,
 } from "./terminal-restore.js";
-import { TERMINAL_MODEL_SCROLLBACK_LINES } from "./terminal-model-limits.js";
-
-function terminalRow(text: string, cols = 80): TerminalCell[] {
-  return Array.from({ length: cols }, (_, index) => ({
-    char: text[index] ?? " ",
-  }));
-}
-
-function terminalState(text: string): TerminalState {
-  return {
-    rows: 1,
-    cols: 80,
-    grid: [terminalRow(text)],
-    scrollback: [],
-    cursor: { row: 0, col: text.length },
-  };
-}
 
 describe("terminal restore policy", () => {
-  test("uses ready snapshots only for restore-aware subscriptions", () => {
-    expect(resolveTerminalSubscriptionSnapshotMode(undefined)).toBe("state");
-    expect(resolveTerminalSubscriptionSnapshotMode({ mode: "live" })).toBe("ready");
-  });
-
-  test("resolves restore snapshot options bounded by the daemon's own window", () => {
-    expect(resolveTerminalRestoreSnapshotOptions({ mode: "live" })).toBeNull();
-    expect(resolveTerminalRestoreSnapshotOptions({ mode: "full-snapshot" })).toBeUndefined();
-    expect(resolveTerminalRestoreSnapshotOptions({ mode: "visible-snapshot" })).toEqual({
+  test("resolves bounded restore snapshot options", () => {
+    expect(
+      resolveTerminalRestoreSnapshotOptions({ restore: { mode: "live" }, chunked: false }),
+    ).toBeNull();
+    expect(
+      resolveTerminalRestoreSnapshotOptions({ restore: { mode: "full-snapshot" }, chunked: false }),
+    ).toBeUndefined();
+    expect(
+      resolveTerminalRestoreSnapshotOptions({
+        restore: { mode: "visible-snapshot" },
+        chunked: false,
+      }),
+    ).toEqual({
       scrollbackLines: 200,
     });
-    // A client asking for its configured scrollback gets what it asks for, right
-    // up to the rows the model actually keeps.
     expect(
       resolveTerminalRestoreSnapshotOptions({
-        mode: "visible-snapshot",
-        scrollbackLines: TERMINAL_MODEL_SCROLLBACK_LINES - 1,
+        restore: { mode: "visible-snapshot", scrollbackLines: 999 },
+        chunked: false,
       }),
-    ).toEqual({ scrollbackLines: TERMINAL_MODEL_SCROLLBACK_LINES - 1 });
-    expect(
-      resolveTerminalRestoreSnapshotOptions({
-        mode: "visible-snapshot",
-        scrollbackLines: TERMINAL_MODEL_SCROLLBACK_LINES * 10,
-      }),
-    ).toEqual({ scrollbackLines: TERMINAL_MODEL_SCROLLBACK_LINES });
+    ).toEqual({ scrollbackLines: 500 });
   });
 
-  test("promotes live restore to visible restore after output overflow", () => {
+  test("bounds pressure recovery for every restore mode", () => {
     expect(resolveRestoreAfterOutputOverflow({ mode: "live" })).toEqual({
       mode: "visible-snapshot",
+      scrollbackLines: 500,
     });
     expect(resolveRestoreAfterOutputOverflow({ mode: "full-snapshot" })).toEqual({
-      mode: "full-snapshot",
+      mode: "visible-snapshot",
+      scrollbackLines: 500,
     });
   });
 
@@ -70,10 +50,7 @@ describe("terminal restore policy", () => {
     const frame = decodeTerminalStreamFrame(
       encodeTerminalRestoreFrame({
         slot: 4,
-        snapshot: {
-          state: terminalState("restored"),
-          revision: 1,
-        },
+        data: new TextEncoder().encode("restored"),
       }),
     );
 
@@ -81,33 +58,41 @@ describe("terminal restore policy", () => {
     expect(frame?.slot).toBe(4);
     expect(new TextDecoder().decode(frame?.payload ?? new Uint8Array())).toContain("restored");
   });
+});
 
-  test("restore frames put an alternate-screen snapshot back on the alternate screen", () => {
-    // The client resets the emulator before replaying a restore frame, so the frame
-    // itself has to switch buffers. Painted into the normal buffer instead, a TUI's
-    // later repaints reach scrollback and the wheel scrolls stale frames.
-    const alternate: TerminalState = { ...terminalState("restored"), alternateScreen: true };
-    const frame = decodeTerminalStreamFrame(
-      encodeTerminalRestoreFrame({ slot: 4, snapshot: { state: alternate, revision: 1 } }),
-    );
-
-    const payload = new TextDecoder().decode(frame?.payload ?? new Uint8Array());
-    expect(payload.startsWith("\u001b[?1049h")).toBe(true);
-    expect(payload.indexOf("restored")).toBeGreaterThan("\u001b[?1049h".length);
+test("projects chunked replay begin onto the declared wire metadata", () => {
+  const frames: Uint8Array[] = [];
+  const deliver = createTerminalRestoreDelivery({
+    slot: 7,
+    chunked: true,
+    send: (frame) => {
+      frames.push(frame);
+    },
   });
-
-  test("sends ANSI the terminal already rendered without reading the cells", () => {
-    const frame = decodeTerminalStreamFrame(
-      encodeTerminalRestoreFrame({
-        slot: 4,
-        snapshot: {
-          state: terminalState(""),
-          revision: 1,
-          ansi: "pre-rendered",
-        },
-      }),
-    );
-
-    expect(new TextDecoder().decode(frame?.payload ?? new Uint8Array())).toBe("pre-rendered");
+  deliver({
+    type: "begin",
+    metadata: {
+      rows: 30,
+      cols: 120,
+      retainedHistoryLines: 842,
+      revision: 5123,
+      replayPreamble: "\x1b[?2004h",
+    },
   });
+  const data = new TextEncoder().encode("\x1b[31m界 replay\x1b[0m");
+  deliver({ type: "data", data });
+  deliver({ type: "end" });
+  const decoded = frames.map((frame) => decodeTerminalStreamFrame(frame)!);
+  expect(decoded.map((frame) => ({ slot: frame.slot, opcode: frame.opcode }))).toEqual([
+    { slot: 7, opcode: TerminalStreamOpcode.ReplayBegin },
+    { slot: 7, opcode: TerminalStreamOpcode.ReplayData },
+    { slot: 7, opcode: TerminalStreamOpcode.ReplayEnd },
+  ]);
+  expect(JSON.parse(new TextDecoder().decode(decoded[0]!.payload))).toEqual({
+    rows: 30,
+    cols: 120,
+    retainedHistoryLines: 842,
+  });
+  expect(decoded[1]!.payload).toEqual(data);
+  expect(decoded[2]!.payload.byteLength).toBe(0);
 });

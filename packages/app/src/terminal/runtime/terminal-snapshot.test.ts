@@ -2,7 +2,7 @@ import { Terminal as HeadlessTerminal } from "@xterm/headless";
 import { Terminal as ClientTerminal } from "@xterm/xterm";
 import { describe, expect, it } from "vitest";
 
-import { renderTerminalSnapshotToAnsi } from "./terminal-snapshot";
+import { SerializeAddon } from "@xterm/addon-serialize";
 
 interface SnapshotCell {
   char: string;
@@ -122,7 +122,7 @@ function extractRow(terminal: ClientTerminal | HeadlessTerminal, row: number): S
 }
 
 describe("terminal-snapshot", () => {
-  it("replays extracted terminal state into a client xterm with matching grid, scrollback, and cursor presentation", async () => {
+  it("replays upstream serialized ANSI into a client xterm with matching grid, scrollback, and cursor presentation", async () => {
     const source = new HeadlessTerminal({
       rows: 4,
       cols: 12,
@@ -138,6 +138,8 @@ describe("terminal-snapshot", () => {
     await writeToTerminal(source, "\u001b[2 q");
     await writeToTerminal(source, "\u001b[?25l");
 
+    const serializer = new SerializeAddon();
+    source.loadAddon(serializer);
     const snapshot = extractState(source);
 
     const client = new ClientTerminal({
@@ -147,7 +149,7 @@ describe("terminal-snapshot", () => {
       scrollback: 100,
     });
 
-    await writeToTerminal(client, renderTerminalSnapshotToAnsi(snapshot));
+    await writeToTerminal(client, serializer.serialize() + "\x1b[2 q\x1b[?25l");
 
     expect(extractState(client)).toEqual(snapshot);
   });
@@ -164,18 +166,16 @@ describe("terminal-snapshot", () => {
     });
     await writeToTerminal(source, "\u001b[?1049hTUI frame");
 
-    const snapshot = {
-      ...extractState(source),
-      alternateScreen: source.buffer.active.type === "alternate",
-    };
+    const serializer = new SerializeAddon();
+    source.loadAddon(serializer);
 
     const client = new ClientTerminal({
-      rows: snapshot.rows,
-      cols: snapshot.cols,
+      rows: source.rows,
+      cols: source.cols,
       allowProposedApi: true,
       scrollback: 100,
     });
-    await writeToTerminal(client, "\u001bc" + renderTerminalSnapshotToAnsi(snapshot));
+    await writeToTerminal(client, "\u001bc" + serializer.serialize());
 
     expect(client.buffer.active.type).toBe("alternate");
     expect(client.buffer.active.baseY).toBe(0);
@@ -191,13 +191,16 @@ describe("terminal-snapshot", () => {
     const source = new HeadlessTerminal({ rows: 2, cols: 8, allowProposedApi: true });
     await writeToTerminal(source, "shell prompt");
 
+    const serializer = new SerializeAddon();
+    source.loadAddon(serializer);
+
     const client = new ClientTerminal({
       rows: 2,
       cols: 8,
       allowProposedApi: true,
       scrollback: 100,
     });
-    await writeToTerminal(client, "\u001bc" + renderTerminalSnapshotToAnsi(extractState(source)));
+    await writeToTerminal(client, "\u001bc" + serializer.serialize());
 
     expect(client.buffer.active.type).toBe("normal");
   });
