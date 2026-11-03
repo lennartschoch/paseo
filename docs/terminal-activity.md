@@ -78,6 +78,17 @@ OpenCode uses a server plugin instead of command hooks. Both generations discove
 
 The plugin translates both event contracts into the existing Paseo hook events. OpenCode 2 disposes its event subscription when the plugin unloads.
 
+Pi uses a global extension file instead of command hooks. The extension registers lifecycle handlers and spawns the Paseo CLI with the same Pi event names as hook events:
+
+| Pi event          | Activity    |
+| ----------------- | ----------- |
+| `agent_start`     | running     |
+| `agent_settled`   | idle        |
+| `ui_prompt_start` | needs-input |
+| `ui_prompt_end`   | running     |
+
+Use `agent_settled`, not `agent_end`, for idle: queued messages, retries, and compaction can start another run after `agent_end`. `ui_prompt_*` fires while Pi is blocked on an extension UI prompt, such as a tool-permission confirmation.
+
 The daemon maps hook states onto terminal activity like an agent lifecycle plus unread attention: `running` → `state: working`, `idle` → `state: idle`, and `needs-input` → `state: idle` with `attentionReason: needs_input`. A `working` → `idle` transition records `state: idle` with `attentionReason: finished` until the user focuses that terminal; plain idle terminals still contribute no workspace status.
 
 ## Focus clearing
@@ -101,8 +112,9 @@ When enabled, Paseo installs provider hooks globally:
 - Claude hooks are written to `~/.claude/settings.json` (or `CLAUDE_CONFIG_DIR/settings.json` when that override is set).
 - Codex hooks are written to `~/.codex/hooks.json` (or `CODEX_HOME/hooks.json` when that override is set). Codex supports a native `commandWindows`, so each Paseo hook includes both POSIX and Windows commands. Non-managed Codex hooks are trust-gated by Codex; users may see Codex's hook review prompt before the hook runs.
 - OpenCode gets a self-contained plugin at `$XDG_CONFIG_HOME/opencode/plugins/paseo-terminal-activity.js` (or `~/.config/opencode/plugins/paseo-terminal-activity.js` when XDG is unset; `OPENCODE_CONFIG_DIR` still wins when set).
+- Pi gets a self-contained extension at `$PI_CODING_AGENT_DIR/extensions/paseo-terminal-activity.js` (or `~/.pi/agent/extensions/paseo-terminal-activity.js` when `PI_CODING_AGENT_DIR` is unset). It is a CommonJS `.js` file; Pi loads it through jiti.
 
-Installation is marker-based/idempotent for config hooks and exact-file/idempotent for the OpenCode plugin. Paseo preserves user hooks, removes only its own marker-matched command hooks, and leaves hooks installed across daemon shutdown. Outside a Paseo terminal they are inert because the command or plugin is gated on `PASEO_TERMINAL_ID`.
+Installation is marker-based/idempotent for config hooks and exact-file/idempotent for the OpenCode plugin and the Pi extension. Paseo preserves user hooks, removes only its own marker-matched command hooks, and leaves hooks installed across daemon shutdown. Outside a Paseo terminal they are inert because the command or plugin is gated on `PASEO_TERMINAL_ID`.
 
 Provider variation lives in `AGENT_HOOK_PROVIDERS`: provider id, installed events, config install metadata, and runtime event-to-activity resolution. The daemon calls `installRegisteredAgentHooks()` once; the CLI calls `resolveHookActivity(provider, event, input)`. Adding a provider should add one provider entry and register it in `AGENT_HOOK_PROVIDERS`, without editing the generic CLI command or daemon bootstrap.
 
