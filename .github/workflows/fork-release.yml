@@ -131,11 +131,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-15
+          - runner: macos-26
             electron_arch: arm64
             node_heap_mb: 4096
           # No Intel (x64) build: nobody on the fork has an Intel Mac, so the
-          # extra runner buys nothing. Add a `macos-15-intel` / x64 entry back to
+          # extra runner buys nothing. Add a `macos-26-intel` / x64 entry back to
           # restore it; the finalize step picks up the second manifest on its own.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 75
