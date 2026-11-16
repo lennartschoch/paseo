@@ -25,8 +25,8 @@ function parseArgs(argv) {
     continue: false,
     push: false,
     noRelease: false,
-    upstreamRemote: "origin",
-    forkRemote: "fork",
+    upstreamRemote: "upstream",
+    forkRemote: "origin",
     branch: "main",
   };
 

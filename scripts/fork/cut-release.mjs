@@ -13,7 +13,7 @@ import { stripForkSuffix } from "./version-utils.mjs";
 const root = repoRootFromModule(import.meta.url);
 
 function parseArgs(argv) {
-  const args = { push: false, forkRemote: "fork", branch: "main" };
+  const args = { push: false, forkRemote: "origin", branch: "main" };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     switch (arg) {

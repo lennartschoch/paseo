@@ -3,7 +3,7 @@
 This is `lennartschoch/paseo`, a fork that keeps the open upstream PRs applied and ships its own
 desktop, daemon, and Android builds from GitHub Releases.
 
-Upstream `getpaseo/paseo` is the `origin` remote. The fork is `fork`.
+Upstream `getpaseo/paseo` is the `upstream` remote. The fork is `origin`.
 
 ## Branches and tags
 
