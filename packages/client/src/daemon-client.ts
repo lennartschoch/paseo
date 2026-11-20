@@ -68,6 +68,7 @@ import type {
   GitSetupOptions,
   CheckoutStatusResponse,
   CheckoutCommit,
+  CheckoutWorktree,
   ParsedDiffFile,
   CheckoutCommitResponse,
   CheckoutMergeResponse,
@@ -483,7 +484,7 @@ export interface SendMessageOptions {
   sourceAgentServerId?: string;
   sessionMode?: string;
   messageId?: string;
-  /** What happens when the agent is mid-turn. The daemon interrupts the turn when omitted. */
+  /** Agent sources wait for turn end unless interrupt is explicit. Human sources default to interrupt. */
   activeTurnBehavior?: ActiveTurnBehavior;
   images?: Array<{ data: string; mimeType: string }>;
   attachments?: SendAgentMessageRequest["attachments"];
@@ -5131,6 +5132,23 @@ export class DaemonClient {
       throw new Error(payload.error.message);
     }
     return { baseRef: payload.baseRef, commits: payload.commits };
+  }
+
+  /** Every git worktree of the repository `cwd` is in, whoever created it. */
+  async listCheckoutWorktrees(cwd: string, requestId?: string): Promise<CheckoutWorktree[]> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"checkout.worktrees.list.response">({
+        requestId,
+        message: {
+          type: "checkout.worktrees.list.request",
+          cwd,
+        },
+        timeout: 60000,
+      });
+    if (payload.error) {
+      throw new Error(payload.error.message);
+    }
+    return payload.worktrees;
   }
 
   async getCommitFileDiff(
