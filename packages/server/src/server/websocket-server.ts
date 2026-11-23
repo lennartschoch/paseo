@@ -71,6 +71,12 @@ import type { HubRelationshipManagement } from "./hub/relationship-controller.js
 import { WorkspaceSetupObservation } from "./workspace-setup-observation.js";
 import { WorkspaceSetupRuntime } from "./workspace-setup-runtime.js";
 import { WorkspaceArchiveOperations } from "./workspace-archive-operations.js";
+
+function resolveWorkspaceArchiveOperations(
+  operations: WorkspaceArchiveOperations | undefined,
+): WorkspaceArchiveOperations {
+  return operations ?? new WorkspaceArchiveOperations();
+}
 import type { HubExecutionAgents } from "./hub/daemon-executions.js";
 import type { AgentProvider } from "./agent/agent-sdk-types.js";
 import { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
@@ -619,9 +625,9 @@ export class VoiceAssistantWebSocketServer {
   private readonly voiceCallerContexts = new Map<string, VoiceCallerContext>();
   private readonly workspaceSetupObservation = new WorkspaceSetupObservation();
   private readonly workspaceSetupRuntime: WorkspaceSetupRuntime;
-  // One lane per workspace across every connection, so an undo from any client can cancel an
-  // archive another connection started.
-  private readonly workspaceArchiveOperations = new WorkspaceArchiveOperations();
+  // One lane per workspace and per checkout across the daemon, so archive, undo, and restore
+  // from any client or background caller coordinate through one boundary.
+  private readonly workspaceArchiveOperations: WorkspaceArchiveOperations;
   private readonly providerSnapshotManager: ProviderSnapshotManager;
   private onLifecycleIntent!: ((intent: SessionLifecycleIntent) => void) | null;
   private onBranchChanged!:
@@ -711,9 +717,11 @@ export class VoiceAssistantWebSocketServer {
     pluginRuntime?: SessionOptions["pluginRuntime"],
     orchestrationSkills?: SessionOptions["orchestrationSkills"],
     workspaceLabelService?: WorkspaceLabelService,
+    workspaceArchiveOperations?: WorkspaceArchiveOperations,
   ) {
     this.logger = logger.child({ module: "websocket-server" });
     this.workspaceSetupRuntime = workspaceSetupRuntime;
+    this.workspaceArchiveOperations = resolveWorkspaceArchiveOperations(workspaceArchiveOperations);
     this.advertiseDaemonStatusRpc = wsConfig.daemonStatusRpc !== false;
     this.advertiseRelayConfig = wsConfig.relayConfig !== false;
     this.connectionLifecycle = wsConfig.startPaused === true ? "starting" : "accepting";
@@ -739,6 +747,7 @@ export class VoiceAssistantWebSocketServer {
           onAccepted,
         ),
       isRunning: (agentId) => agentManager.hasInFlightRun(agentId),
+      canSteer: (agentId) => agentManager.canSteer(agentId),
       hasPendingPermission: (agentId) => agentManager.hasPendingPermissions(agentId),
       subscribe: (notify) =>
         agentManager.subscribe(
@@ -747,6 +756,7 @@ export class VoiceAssistantWebSocketServer {
           },
           { replayState: false },
         ),
+      onStop: (notify) => agentManager.onStop(notify),
       dispatch: async (batch) => {
         const dispatch = await sendPreparedPromptToAgent({
           agentManager,
@@ -766,6 +776,8 @@ export class VoiceAssistantWebSocketServer {
           await waitForAgentRunStartWithTimeout(agentManager, batch.recipientId, dispatch.started);
         return dispatch.disposition;
       },
+      awaitStart: (agentId, started) =>
+        waitForAgentRunStartWithTimeout(agentManager, agentId, started),
       onError: (err, batch) =>
         this.logger.error(
           { err, agentId: batch.recipientId, messageIds: batch.messageIds },
@@ -1100,6 +1112,19 @@ export class VoiceAssistantWebSocketServer {
           (connection) => connection.session,
         ),
       ),
+    );
+  }
+
+  public async publishWorkspaceUpdates(workspaceIds: Iterable<string>): Promise<void> {
+    const ids = Array.from(workspaceIds);
+    await Promise.all(
+      this.listSessions().map(async (session) => {
+        try {
+          await session.emitWorkspaceUpdatesForExternalWorkspaceIds(ids);
+        } catch (error) {
+          this.logger.warn({ err: error }, "Failed to publish workspace updates");
+        }
+      }),
     );
   }
 
@@ -1706,6 +1731,7 @@ export class VoiceAssistantWebSocketServer {
       getTransportBufferedAmount: options.getTransportBufferedAmount,
       onLifecycleIntent: options.onLifecycleIntent,
       logger: options.connectionLogger.child({ module: "session" }),
+      publishWorkspaceArchiveUpdates: (workspaceIds) => this.publishWorkspaceUpdates(workspaceIds),
       onWorkspaceRecovered: async (workspace) => {
         await Promise.all(
           this.listSessions().map((activeSession) =>
@@ -2073,6 +2099,7 @@ export class VoiceAssistantWebSocketServer {
         relayProtectedSecurity: true,
         usageSetting: true,
         usageSources: true,
+        providerInstallation: true,
         ownedSubscriptions: true,
         providerOptionControls: true,
         entityMetadata: true,
@@ -2243,6 +2270,8 @@ export class VoiceAssistantWebSocketServer {
         hopliteProvider: this.providerSnapshotManager.supportsConfigRequiredProvider("hoplite"),
         // COMPAT(fxProvider): added after v0.15.3, remove after 2027-05-09 once host floor includes the bundled adapter.
         fxProvider: this.providerSnapshotManager.supportsConfigRequiredProvider("fx"),
+        // COMPAT(gooseProvider): added in v0.17.0, remove after 2027-05-20 once host floor includes the bundled adapter.
+        gooseProvider: this.providerSnapshotManager.supportsConfigRequiredProvider("goose"),
         // COMPAT(importSessionWorkspaceTarget): added in v0.1.110, remove gate after 2027-01-16.
         importSessionWorkspaceTarget: true,
         // COMPAT(importSessionSearch): added in v0.7.3, remove gate after 2027-03-02.
@@ -2259,6 +2288,8 @@ export class VoiceAssistantWebSocketServer {
         canonicalSubmittedPrompts: true,
         agentMessageProvenance: true,
         agentMessageBatching: true,
+        // COMPAT(agentActiveTurnBehaviors): added in v0.17.2, remove gate after 2027-05-22.
+        agentActiveTurnBehaviors: true,
         // COMPAT(stableProjectIdentity): added in v0.1.109, remove gate after 2027-01-15.
         stableProjectIdentity: true,
         // COMPAT(workspaceScriptManagement): added in v0.1.105, remove gate after 2027-01-10.
