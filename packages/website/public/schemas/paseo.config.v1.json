@@ -270,9 +270,9 @@
                   "minLength": 1
                 },
                 "clientSecret": {
-                  "description": "Set for a confidential client; the daemon performs the token exchange.",
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "Client secret of a confidential client. Required: the provider then only redeems codes the daemon presents."
                 },
                 "scopes": {
                   "description": "Scopes the app requests. Defaults to openid profile email groups offline_access.",
@@ -314,9 +314,13 @@
                 "groupsClaim": {
                   "type": "string",
                   "minLength": 1
+                },
+                "allowAnyUser": {
+                  "description": "Admit every user the provider signs in for this client. Required when no allow-list is set.",
+                  "type": "boolean"
                 }
               },
-              "required": ["issuer", "clientId"],
+              "required": ["issuer", "clientId", "clientSecret"],
               "additionalProperties": false
             }
           },

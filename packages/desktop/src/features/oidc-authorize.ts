@@ -56,7 +56,8 @@ export function authorizeOidcInWindow(
     }
 
     function capture(event: { preventDefault: () => void }, target: string): void {
-      if (!target.startsWith(redirectUri)) return;
+      // Exact match up to the query: the redirect URI names the daemon address.
+      if (target.split(/[?#]/)[0] !== redirectUri) return;
       event.preventDefault();
       finish({ status: "completed", callbackUrl: target });
     }

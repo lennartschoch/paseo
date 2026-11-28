@@ -20,6 +20,9 @@ const OidcSessionSchema = z.object({
   email: z.string().nullable(),
   name: z.string().nullable(),
   useTls: z.boolean(),
+  /** The provider this session came from; a later sign-in must name the same one. */
+  issuer: z.string(),
+  clientId: z.string(),
 });
 
 export type OidcSession = z.infer<typeof OidcSessionSchema>;

@@ -9,7 +9,8 @@ import type { HostProfile } from "@/types/host-connection";
 import { applyOidcSignIn } from "./oidc-finish";
 import { fetchOidcDescriptor, type OidcDaemonTarget, type OidcDescriptor } from "./oidc-http";
 import { beginOidcSignIn } from "./oidc-login";
-import { clearOidcSession, useOidcSession } from "./oidc-session-store";
+import { useOidcSession } from "./oidc-session-store";
+import { signOutOidc } from "./oidc-token";
 
 // FORK(oidc): single sign-on status and actions for a saved host. See .fork/README.md.
 
@@ -82,13 +83,18 @@ function HostOidcSectionContent({ host, target }: { host: HostProfile; target: O
 
   const handleSignOut = useCallback(async () => {
     setBusy(true);
+    setError(null);
     try {
-      await clearOidcSession(target);
-      await getHostRuntimeStore().reauthenticateHost(host.serverId);
+      await signOutOidc(target);
+    } catch (caught) {
+      // Signed out locally; the provider may still honor the refresh token until it expires.
+      const reason = caught instanceof Error ? caught.message : t("oidc.errors.generic");
+      setError(t("oidc.errors.revokeFailed", { reason }));
     } finally {
+      await getHostRuntimeStore().reauthenticateHost(host.serverId);
       setBusy(false);
     }
-  }, [host.serverId, target]);
+  }, [host.serverId, t, target]);
 
   const onSignIn = useCallback(() => void handleSignIn(), [handleSignIn]);
   const onSignOut = useCallback(() => void handleSignOut(), [handleSignOut]);

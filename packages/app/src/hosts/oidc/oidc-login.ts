@@ -1,15 +1,19 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { CryptoDigestAlgorithm, CryptoEncoding, digestStringAsync } from "expo-crypto";
 import { z } from "zod";
+import { isLoopbackEndpoint } from "@/hosts/connection-display";
+import { i18n } from "@/i18n/i18next";
 import { readValidatedJson } from "@/storage/validated-storage";
 import { openOidcAuthorization, resolveOidcRedirectUri } from "./oidc-authorize";
 import {
   fetchOidcDescriptor,
+  isOidcTransportSecure,
   type OidcDaemonTarget,
   type OidcDescriptor,
+  oidcTargetKey,
   requestOidcTokens,
 } from "./oidc-http";
-import { saveOidcSession } from "./oidc-session-store";
+import { getOidcSession, saveOidcSession } from "./oidc-session-store";
 
 // FORK(oidc): first-class OIDC sign-in for direct connections. See .fork/README.md.
 //
@@ -30,7 +34,10 @@ export type OidcSignInPurpose = z.infer<typeof PurposeSchema>;
 const PendingFlowSchema = z.object({
   state: z.string(),
   codeVerifier: z.string(),
+  nonce: z.string(),
   redirectUri: z.string(),
+  issuer: z.string(),
+  clientId: z.string(),
   endpoint: z.string(),
   useTls: z.boolean(),
   purpose: PurposeSchema,
@@ -84,6 +91,22 @@ async function takePendingFlow(state: string): Promise<PendingFlow | null> {
   return flow;
 }
 
+/**
+ * The host supplies the authorization endpoint, and Linking.openURL opens any
+ * scheme (tel:, intent:, other apps' deep links). Only https leaves the app,
+ * plus http to a provider on this machine for local setups.
+ */
+function isSafeAuthorizationEndpoint(endpoint: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return false;
+  }
+  if (url.protocol === "https:") return true;
+  return url.protocol === "http:" && isLoopbackEndpoint(url.host);
+}
+
 function buildAuthorizationUrl(input: {
   descriptor: OidcDescriptor;
   redirectUri: string;
@@ -122,24 +145,49 @@ export async function beginOidcSignIn(input: {
   purpose: OidcSignInPurpose;
   descriptor?: OidcDescriptor;
 }): Promise<OidcSignInResult | null> {
+  if (!isOidcTransportSecure(input.target)) {
+    return { status: "failed", message: i18n.t("oidc.errors.tlsRequired") };
+  }
   const descriptor = input.descriptor ?? (await fetchOidcDescriptor(input.target));
   if (!descriptor) return null;
+  if (!isSafeAuthorizationEndpoint(descriptor.authorizationEndpoint)) {
+    return { status: "failed", message: i18n.t("oidc.errors.unsafeAuthorizationEndpoint") };
+  }
+  // Pin the provider: a host that starts naming another issuer or client is not
+  // trusted with a sign-in until the user removes and re-adds it.
+  const existing = await getOidcSession(input.target);
+  if (
+    existing &&
+    (existing.issuer !== descriptor.issuer || existing.clientId !== descriptor.clientId)
+  ) {
+    return {
+      status: "failed",
+      message: i18n.t("oidc.errors.providerChanged", {
+        issuer: descriptor.issuer,
+        pinned: existing.issuer,
+      }),
+    };
+  }
 
   const state = randomUrlSafe(24);
   const codeVerifier = randomUrlSafe(48);
+  const nonce = randomUrlSafe(16);
   const codeChallenge = base64ToUrlSafe(
     await digestStringAsync(CryptoDigestAlgorithm.SHA256, codeVerifier, {
       encoding: CryptoEncoding.BASE64,
     }),
   );
-  const redirectUri = resolveOidcRedirectUri();
+  const redirectUri = resolveOidcRedirectUri(input.target.endpoint);
   const flows = await readPendingFlows();
   await writePendingFlows([
     ...flows,
     {
       state,
       codeVerifier,
+      nonce,
       redirectUri,
+      issuer: descriptor.issuer,
+      clientId: descriptor.clientId,
       endpoint: input.target.endpoint,
       useTls: input.target.useTls,
       purpose: input.purpose,
@@ -151,7 +199,7 @@ export async function beginOidcSignIn(input: {
     descriptor,
     redirectUri,
     state,
-    nonce: randomUrlSafe(16),
+    nonce,
     codeChallenge,
   });
   const waiter = new Promise<OidcSignInResult>((resolve) => waiters.set(state, resolve));
@@ -185,7 +233,9 @@ export async function beginOidcSignIn(input: {
 export async function completeOidcSignIn(
   callbackUrl: string,
 ): Promise<{ handled: boolean; target: OidcDaemonTarget; purpose: OidcSignInPurpose }> {
-  const params = new URL(callbackUrl).searchParams;
+  const url = new URL(callbackUrl);
+  const params = url.searchParams;
+  const redirectEndpoint = decodeURIComponent(url.pathname.replace(/^\/+/, ""));
   const state = params.get("state");
   if (!state) throw new OidcCallbackError("The sign-in response has no state.");
   const flow = await takePendingFlow(state);
@@ -193,6 +243,10 @@ export async function completeOidcSignIn(
   waiters.delete(state);
   try {
     if (!flow) throw new OidcCallbackError("This sign-in expired. Start it again.");
+    // The redirect names the daemon the sign-in was started for.
+    if (oidcTargetKey({ endpoint: redirectEndpoint }) !== oidcTargetKey(flow)) {
+      throw new OidcCallbackError("The sign-in response is for a different host.");
+    }
     const error = params.get("error");
     if (error) {
       throw new OidcCallbackError(params.get("error_description") ?? error);
@@ -205,8 +259,14 @@ export async function completeOidcSignIn(
       code,
       codeVerifier: flow.codeVerifier,
       redirectUri: flow.redirectUri,
+      nonce: flow.nonce,
     });
-    await saveOidcSession(target, { ...tokens, useTls: flow.useTls });
+    await saveOidcSession(target, {
+      ...tokens,
+      useTls: flow.useTls,
+      issuer: flow.issuer,
+      clientId: flow.clientId,
+    });
     waiter?.({ status: "signed_in", target, purpose: flow.purpose });
     return { handled: Boolean(waiter), target, purpose: flow.purpose };
   } catch (error) {

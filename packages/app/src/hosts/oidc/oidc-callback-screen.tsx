@@ -8,17 +8,20 @@ import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import type { Theme } from "@/styles/theme";
 import { buildClientHostSettingsRoute } from "@/utils/host-routes";
 import { applyOidcSignIn } from "./oidc-finish";
+import { oidcRedirectPathSegment } from "./oidc-http";
 import { completeOidcSignIn } from "./oidc-login";
 
-// FORK(oidc): the provider redirects here (paseo://oidc-callback on native,
-// <origin>/oidc-callback on web). See .fork/README.md.
+// FORK(oidc): the provider redirects here (paseo://oidc-callback/<daemon> on native,
+// <origin>/oidc-callback/<daemon> on web). See .fork/README.md.
 
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
 function buildCallbackUrl(params: Record<string, string | string[] | undefined>): string {
-  const url = new URL("paseo://oidc-callback");
-  for (const [key, value] of Object.entries(params)) {
+  const { endpoint, ...query } = params;
+  const daemon = Array.isArray(endpoint) ? endpoint[0] : endpoint;
+  const url = new URL(`paseo://oidc-callback/${oidcRedirectPathSegment(daemon ?? "")}`);
+  for (const [key, value] of Object.entries(query)) {
     const single = Array.isArray(value) ? value[0] : value;
     if (typeof single === "string") url.searchParams.set(key, single);
   }

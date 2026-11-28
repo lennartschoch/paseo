@@ -1979,9 +1979,24 @@ export const en = {
       failedTitle: "Sign-in failed",
       back: "Back",
     },
+    confirm: {
+      title: "Sign in with single sign-on?",
+      message:
+        "{{host}} asks you to sign in with {{provider}}. Continue only if you expect this host to use that provider.",
+      continue: "Continue",
+      cancel: "Cancel",
+    },
     errors: {
       generic: "Sign-in failed.",
       unavailable: "This host does not offer single sign-on.",
+      tlsRequired:
+        "Single sign-on needs a TLS connection to this host. Turn on TLS for the connection, or use the daemon password.",
+      providerChanged:
+        "This host now asks for sign-in with {{issuer}}, but you signed in with {{pinned}} before. Remove and re-add the host if the change is expected.",
+      unsafeAuthorizationEndpoint:
+        "This host names a sign-in page that is not an https address. Paseo will not open it.",
+      revokeFailed:
+        "Signed out on this device, but the provider did not revoke the session: {{reason}}",
     },
   },
   pairing: {

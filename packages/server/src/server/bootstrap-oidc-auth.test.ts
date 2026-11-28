@@ -8,6 +8,15 @@ import { startTestOidcProvider, type TestOidcProvider } from "./test-utils/oidc-
 
 const originalEnv = { ...process.env };
 
+function oidcSettings(provider: TestOidcProvider) {
+  return {
+    issuer: provider.issuer,
+    clientId: provider.clientId,
+    clientSecret: "s3cret",
+    allowAnyUser: true,
+  };
+}
+
 function createClient(input: {
   port: number;
   clientId: string;
@@ -33,7 +42,7 @@ describe("daemon OIDC auth", () => {
     process.env = { ...originalEnv, PASEO_SUPERVISED: "0" };
     provider = await startTestOidcProvider();
     daemon = await createTestPaseoDaemon({
-      auth: { oidc: { issuer: provider.issuer, clientId: provider.clientId } },
+      auth: { oidc: oidcSettings(provider) },
     });
   });
 
@@ -102,7 +111,8 @@ describe("daemon OIDC auth", () => {
   });
 
   test("exchanges an authorization code through the daemon", async () => {
-    const idToken = await provider.signIdToken({ email: "me@example.com" });
+    const nonce = "n".repeat(22);
+    const idToken = await provider.signIdToken({ email: "me@example.com", nonce });
     provider.setTokenResponse({ status: 200, body: { id_token: idToken, refresh_token: "r1" } });
 
     const response = await fetch(`http://127.0.0.1:${daemon.port}/api/auth/oidc/token`, {
@@ -112,7 +122,8 @@ describe("daemon OIDC auth", () => {
         grantType: "authorization_code",
         code: "abc",
         codeVerifier: "v".repeat(43),
-        redirectUri: "paseo://oidc-callback",
+        redirectUri: `paseo://oidc-callback/127.0.0.1:${daemon.port}`,
+        nonce,
       }),
     });
 
@@ -138,12 +149,59 @@ describe("daemon OIDC auth", () => {
     expect(await response.json()).toMatchObject({ error: "invalid_grant" });
   });
 
+  test("revokes a refresh token at the provider", async () => {
+    const response = await fetch(`http://127.0.0.1:${daemon.port}/api/auth/oidc/revoke`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refreshToken: "r1" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ revoked: true });
+    expect(provider.revocationRequests[0]!.get("token")).toBe("r1");
+  });
+
+  test("closes an admitted connection when its OIDC token expires", async () => {
+    const token = await provider.signIdToken({ expiresInSeconds: 1 });
+    const ws = new WebSocket(`ws://127.0.0.1:${daemon.port}/ws`);
+    const serverInfo = new Promise<unknown>((resolve) =>
+      ws.on("message", (data) => resolve(JSON.parse(String(data)))),
+    );
+    const closed = new Promise<{ code: number; reason: string }>((resolve) =>
+      ws.once("close", (code, reason) => resolve({ code, reason: reason.toString() })),
+    );
+    await new Promise<void>((resolve) => ws.once("open", () => resolve()));
+    ws.send(
+      JSON.stringify({
+        type: "hello",
+        clientId: "expiring",
+        clientType: "cli",
+        protocolVersion: 1,
+        auth: { kind: "oidc", token },
+      }),
+    );
+
+    await expect(serverInfo).resolves.toMatchObject({
+      type: "session",
+      message: { payload: { status: "server_info" } },
+    });
+    await expect(closed).resolves.toEqual({ code: 4410, reason: "Credential expired" });
+  });
+
+  test("refuses to start OIDC without an allow-list or allowAnyUser", async () => {
+    await expect(
+      createTestPaseoDaemon({
+        auth: { oidc: { issuer: provider.issuer, clientId: "paseo", clientSecret: "s3cret" } },
+      }),
+    ).rejects.toThrow();
+  });
+
   test("keeps the daemon password working alongside OIDC", async () => {
     // bcrypt hash of "correct-password", the fixture bootstrap-auth.test.ts uses.
     const both = await createTestPaseoDaemon({
       auth: {
         password: "$2b$12$OLxyuuP9uLK30Uzc4wQX0O6liuU/Q1t5P2b0Ebf36mULvpVK3DRZW",
-        oidc: { issuer: provider.issuer, clientId: provider.clientId },
+        oidc: oidcSettings(provider),
       },
     });
     try {

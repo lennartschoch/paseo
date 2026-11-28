@@ -1,9 +1,10 @@
 import type { OidcAuthorizationOutcome, OpenOidcAuthorizationInput } from "./oidc-authorize-types";
+import { oidcRedirectPathSegment } from "./oidc-http";
 
 // FORK(oidc): browser web build. See .fork/README.md.
 
-export function resolveOidcRedirectUri(): string {
-  return `${window.location.origin}/oidc-callback`;
+export function resolveOidcRedirectUri(endpoint: string): string {
+  return `${window.location.origin}/oidc-callback/${oidcRedirectPathSegment(endpoint)}`;
 }
 
 export async function openOidcAuthorization(

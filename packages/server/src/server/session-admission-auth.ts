@@ -34,7 +34,11 @@ export async function resolveSessionAdmission(input: {
   if (credential.kind === "oidc") {
     if (!oidcVerifier) return { rejection: "incorrect_password" };
     const verification = await oidcVerifier.verify(credential.token);
-    return verification.ok ? { admission: OWNER_ADMISSION } : { rejection: "incorrect_password" };
+    // The websocket server closes the connection at expiresAt; the client reconnects
+    // with a refreshed token, which re-checks the allow-lists.
+    return verification.ok
+      ? { admission: { ...OWNER_ADMISSION, expiresAt: verification.identity.expiresAt } }
+      : { rejection: "incorrect_password" };
   }
   if (!passwordHash) return { rejection: "incorrect_password" };
   return (await compare(credential.password, passwordHash))

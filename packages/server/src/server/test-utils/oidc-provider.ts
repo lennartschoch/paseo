@@ -15,6 +15,8 @@ export interface TestOidcProvider {
   setTokenResponse(response: { status: number; body: Record<string, unknown> }): void;
   tokenRequests: URLSearchParams[];
   tokenRequestAuthorization: (string | undefined)[];
+  /** Bodies posted to the revocation endpoint. */
+  revocationRequests: URLSearchParams[];
   close(): Promise<void>;
 }
 
@@ -27,6 +29,7 @@ export async function startTestOidcProvider(
   const jwk = { ...(await exportJWK(publicKey)), kid: "test-key", alg: "RS256", use: "sig" };
   const tokenRequests: URLSearchParams[] = [];
   const tokenRequestAuthorization: (string | undefined)[] = [];
+  const revocationRequests: URLSearchParams[] = [];
   let tokenResponse: { status: number; body: Record<string, unknown> } = {
     status: 400,
     body: { error: "invalid_grant" },
@@ -43,6 +46,7 @@ export async function startTestOidcProvider(
           authorization_endpoint: `${issuer}/authorize`,
           token_endpoint: `${issuer}/token`,
           jwks_uri: `${issuer}/jwks`,
+          revocation_endpoint: `${issuer}/revoke`,
         }),
       );
       return;
@@ -63,6 +67,17 @@ export async function startTestOidcProvider(
         res.statusCode = tokenResponse.status;
         res.setHeader("Content-Type", "application/json");
         res.end(JSON.stringify(tokenResponse.body));
+      });
+      return;
+    }
+    if (url.pathname === "/revoke" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk: Buffer) => {
+        body += chunk.toString();
+      });
+      req.on("end", () => {
+        revocationRequests.push(new URLSearchParams(body));
+        res.end();
       });
       return;
     }
@@ -96,6 +111,7 @@ export async function startTestOidcProvider(
     },
     tokenRequests,
     tokenRequestAuthorization,
+    revocationRequests,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
 }

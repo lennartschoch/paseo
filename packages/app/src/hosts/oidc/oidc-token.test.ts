@@ -7,12 +7,14 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 interface FakeDaemon {
   endpoint: string;
   requests: Record<string, unknown>[];
+  revocations: Record<string, unknown>[];
   respond(status: number, body: Record<string, unknown>): void;
   close(): Promise<void>;
 }
 
 async function startFakeDaemon(): Promise<FakeDaemon> {
   const requests: Record<string, unknown>[] = [];
+  const revocations: Record<string, unknown>[] = [];
   let response: { status: number; body: Record<string, unknown> } = { status: 500, body: {} };
   const server: Server = createServer((req, res) => {
     let body = "";
@@ -21,6 +23,7 @@ async function startFakeDaemon(): Promise<FakeDaemon> {
     });
     req.on("end", () => {
       if (req.url === "/api/auth/oidc/token") requests.push(JSON.parse(body));
+      if (req.url === "/api/auth/oidc/revoke") revocations.push(JSON.parse(body));
       res.statusCode = response.status;
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify(response.body));
@@ -30,6 +33,7 @@ async function startFakeDaemon(): Promise<FakeDaemon> {
   return {
     endpoint: `127.0.0.1:${(server.address() as AddressInfo).port}`,
     requests,
+    revocations,
     respond: (status, body) => {
       response = { status, body };
     },
@@ -55,6 +59,8 @@ function session(overrides: { expiresAt: number; refreshToken?: string | null })
     email: null,
     name: null,
     useTls: false,
+    issuer: "https://auth.example.com",
+    clientId: "paseo-test",
   };
 }
 
@@ -133,19 +139,103 @@ describe("resolveOidcToken", () => {
   });
 });
 
-describe("oidcEndpointForConnection", () => {
-  test("uses the host's direct connection for relay connections and none for local sockets", async () => {
+describe("plain-text connections", () => {
+  test("never hands out a token for a remote host without TLS", async () => {
+    const { store, token } = await loadModules();
+    await store.saveOidcSession(
+      { endpoint: "paseo.example.com:6767" },
+      session({ expiresAt: Date.now() + 3_600_000 }),
+    );
+
+    await expect(token.resolveOidcToken("paseo.example.com:6767")).resolves.toBeUndefined();
+  });
+});
+
+describe("signOutOidc", () => {
+  let daemon: FakeDaemon;
+
+  beforeEach(async () => {
+    daemon = await startFakeDaemon();
+  });
+
+  afterEach(async () => {
+    await daemon.close();
+  });
+
+  test("revokes the refresh token through the daemon and forgets the session", async () => {
+    const { store, token } = await loadModules();
+    const target = { endpoint: daemon.endpoint, useTls: false };
+    await store.saveOidcSession(target, session({ expiresAt: Date.now() + 3_600_000 }));
+    daemon.respond(200, { revoked: true });
+
+    await token.signOutOidc(target);
+
+    expect(daemon.revocations).toEqual([{ refreshToken: "refresh-old" }]);
+    expect(await store.getOidcSession(target)).toBeNull();
+  });
+
+  test("forgets the session even when revocation fails", async () => {
+    const { store, token } = await loadModules();
+    const target = { endpoint: daemon.endpoint, useTls: false };
+    await store.saveOidcSession(target, session({ expiresAt: Date.now() + 3_600_000 }));
+    daemon.respond(502, { error: "provider_error", message: "down" });
+
+    await expect(token.signOutOidc(target)).rejects.toThrow("down");
+    expect(await store.getOidcSession(target)).toBeNull();
+  });
+});
+
+describe("oidcEndpointsForConnection", () => {
+  test("tries the connection's own endpoint, then the host's other direct endpoints", async () => {
     const { token } = await loadModules();
     const host = {
       connections: [
         { id: "relay:x", type: "relay" as const, relayEndpoint: "r:443", daemonPublicKeyB64: "k" },
-        { id: "direct:h:6767", type: "directTcp" as const, endpoint: "h:6767" },
+        { id: "direct:h:6767", type: "directTcp" as const, endpoint: "h:6767", useTls: true },
+        { id: "direct:ts:443", type: "directTcp" as const, endpoint: "ts:443", useTls: true },
       ],
     };
 
-    expect(token.oidcEndpointForConnection(host, host.connections[0]!)).toBe("h:6767");
+    expect(token.oidcEndpointsForConnection(host, host.connections[0]!)).toEqual([
+      "h:6767",
+      "ts:443",
+    ]);
+    expect(token.oidcEndpointsForConnection(host, host.connections[2]!)).toEqual([
+      "ts:443",
+      "h:6767",
+    ]);
     expect(
-      token.oidcEndpointForConnection(host, { id: "s", type: "directSocket", path: "/tmp/s" }),
-    ).toBeNull();
+      token.oidcEndpointsForConnection(host, { id: "p", type: "directTcp", endpoint: "h:6767" }),
+    ).toEqual([]);
+    expect(
+      token.oidcEndpointsForConnection(host, { id: "s", type: "directSocket", path: "/tmp/s" }),
+    ).toEqual([]);
+  });
+
+  test("finds a session saved under 127.0.0.1 through the registry's localhost form", async () => {
+    const { store, token } = await loadModules();
+    await store.saveOidcSession(
+      { endpoint: "127.0.0.1:6795" },
+      session({ expiresAt: Date.now() + 3_600_000 }),
+    );
+
+    await expect(token.resolveOidcToken("localhost:6795")).resolves.toBe("id-old");
+  });
+
+  test("a route without a session of its own uses the host's signed-in endpoint", async () => {
+    const { store, token } = await loadModules();
+    const signedIn = { endpoint: "10.0.0.5:6795", useTls: true };
+    await store.saveOidcSession(signedIn, {
+      ...session({ expiresAt: Date.now() + 3_600_000 }),
+      useTls: true,
+    });
+    const host = {
+      connections: [{ id: "direct:10.0.0.5:6795", type: "directTcp" as const, ...signedIn }],
+    };
+    const localRoute = { id: "local", type: "directTcp" as const, endpoint: "localhost:6795" };
+
+    const resolve = token.createOidcTokenResolver(host, localRoute);
+
+    await expect(resolve?.()).resolves.toBe("id-old");
   });
 });

@@ -26,13 +26,31 @@ export async function isDaemonBearerTokenAuthorizedAsync(input: {
   auth: DaemonAuthConfig | undefined;
   token: string | null;
 }): Promise<boolean> {
+  return (await authorizeDaemonBearerToken(input)).authorized;
+}
+
+export type DaemonBearerAuthorization =
+  | { authorized: false }
+  /** `expiresAt` is set for OIDC tokens: the credential stops being valid then. */
+  | { authorized: true; expiresAt: number | null };
+
+export async function authorizeDaemonBearerToken(input: {
+  auth: DaemonAuthConfig | undefined;
+  token: string | null;
+}): Promise<DaemonBearerAuthorization> {
   const { auth, token } = input;
-  if (!isDaemonAuthRequired(auth)) return true;
-  if (token === null) return false;
+  if (!isDaemonAuthRequired(auth)) return { authorized: true, expiresAt: null };
+  if (token === null) return { authorized: false };
   // JWT-shaped tokens try OIDC first so an OIDC caller does not pay for a bcrypt compare.
   const verifier = auth?.oidcVerifier;
-  if (verifier?.canVerify(token) && (await verifier.verify(token)).ok) return true;
-  return auth?.password ? compare(token, auth.password) : false;
+  if (verifier?.canVerify(token)) {
+    const verification = await verifier.verify(token);
+    if (verification.ok) return { authorized: true, expiresAt: verification.identity.expiresAt };
+  }
+  if (auth?.password && (await compare(token, auth.password))) {
+    return { authorized: true, expiresAt: null };
+  }
+  return { authorized: false };
 }
 
 export interface BearerAuthRejectContext {

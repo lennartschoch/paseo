@@ -11,8 +11,9 @@ export const OidcAuthSettingsSchema = z
     clientSecret: z
       .string()
       .min(1)
-      .optional()
-      .describe("Set for a confidential client; the daemon performs the token exchange."),
+      .describe(
+        "Client secret of a confidential client. Required: the provider then only redeems codes the daemon presents.",
+      ),
     scopes: NonEmptyStringListSchema.optional().describe(
       "Scopes the app requests. Defaults to openid profile email groups offline_access.",
     ),
@@ -23,8 +24,27 @@ export const OidcAuthSettingsSchema = z
     allowedEmails: NonEmptyStringListSchema.optional(),
     allowedGroups: NonEmptyStringListSchema.optional(),
     groupsClaim: z.string().trim().min(1).optional(),
+    allowAnyUser: z
+      .boolean()
+      .optional()
+      .describe(
+        "Admit every user the provider signs in for this client. Required when no allow-list is set.",
+      ),
   })
-  .strict();
+  .strict()
+  .refine(
+    (settings) =>
+      settings.allowAnyUser === true ||
+      Boolean(
+        settings.allowedSubjects?.length ||
+        settings.allowedEmails?.length ||
+        settings.allowedGroups?.length,
+      ),
+    {
+      message:
+        "Set allowedSubjects, allowedEmails or allowedGroups, or set allowAnyUser: true to admit every user the provider signs in.",
+    },
+  );
 
 export type OidcAuthSettings = z.infer<typeof OidcAuthSettingsSchema>;
 
@@ -36,6 +56,14 @@ function parseList(value: string | undefined): string[] | undefined {
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
   return items && items.length > 0 ? items : undefined;
+}
+
+function parseBoolean(value: string | undefined): boolean | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (normalized === "true" || normalized === "1") return true;
+  if (normalized === "false" || normalized === "0") return false;
+  throw new Error(`Expected true or false, got "${value}".`);
 }
 
 /**
@@ -59,6 +87,7 @@ export function readOidcAuthSettingsFromEnv(env: NodeJS.ProcessEnv): OidcAuthSet
     allowedEmails: parseList(env.PASEO_OIDC_ALLOWED_EMAILS),
     allowedGroups: parseList(env.PASEO_OIDC_ALLOWED_GROUPS),
     groupsClaim: env.PASEO_OIDC_GROUPS_CLAIM?.trim() || undefined,
+    allowAnyUser: parseBoolean(env.PASEO_OIDC_ALLOW_ANY_USER),
   };
   const parsed = OidcAuthSettingsSchema.safeParse(
     Object.fromEntries(Object.entries(candidate).filter(([, value]) => value !== undefined)),

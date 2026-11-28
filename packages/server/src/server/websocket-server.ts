@@ -120,8 +120,8 @@ import {
   extractHttpBearerToken,
   extractWsBearerProtocol,
   extractWsBearerToken,
+  authorizeDaemonBearerToken,
   isDaemonAuthRequired,
-  isDaemonBearerTokenAuthorizedAsync,
   type DaemonAuthConfig,
 } from "./auth.js";
 import { resolveSessionAdmission } from "./session-admission-auth.js";
@@ -154,6 +154,10 @@ import {
 } from "./websocket/physical-socket.js";
 
 const WS_CLOSE_DAEMON_AUTH_FAILED = 4401;
+// FORK(oidc): not an auth failure, so clients reconnect with a refreshed token.
+const WS_CLOSE_CREDENTIAL_EXPIRED = 4410;
+// setTimeout overflows above 2^31-1 ms (~24.8 days).
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 // Give clients intermediate messages that count as progress during large transfers.
 const DIRECT_WEBSOCKET_FRAME_BYTES = 512 * 1024;
 
@@ -170,6 +174,8 @@ export interface SessionAdmission {
   principalId: string;
   permissions: readonly DaemonPermission[];
   hubExecutionAgents?: HubExecutionAgents;
+  /** FORK(oidc): epoch ms at which the admitting credential expires; the socket closes then. */
+  expiresAt?: number;
 }
 
 interface PendingConnection {
@@ -635,6 +641,7 @@ export class VoiceAssistantWebSocketServer {
   }
   private readonly passwordHash: string | undefined;
   private readonly credentialSource: DaemonAuthConfig | undefined;
+  private readonly credentialExpiryTimers = new Map<WebSocketLike, ReturnType<typeof setTimeout>>();
   private readonly worktreesRoot: string | undefined;
   private readonly daemonConfigStore: DaemonConfigStore;
   private readonly pushNotifications: PushNotifications;
@@ -1098,11 +1105,13 @@ export class VoiceAssistantWebSocketServer {
       const token =
         extractHttpBearerToken(request.headers.authorization) ?? extractWsBearerToken(protocol);
       const hasHeaderCredential = token !== null;
+      let headerCredentialExpiresAt: number | null = null;
       // FORK(oidc): "auth required" includes OIDC-only daemons; see .fork/README.md.
       if (isDaemonAuthRequired(auth) && hasHeaderCredential) {
         const requestMetadata = extractSocketRequestMetadata(request);
-        const isAuthorized = await isDaemonBearerTokenAuthorizedAsync({ auth, token });
-        if (!isAuthorized) {
+        const authorization = await authorizeDaemonBearerToken({ auth, token });
+        if (authorization.authorized) headerCredentialExpiresAt = authorization.expiresAt;
+        if (!authorization.authorized) {
           const reason = "Incorrect password";
           this.logger.warn(
             { ...requestMetadata, hasToken: true },
@@ -1118,7 +1127,14 @@ export class VoiceAssistantWebSocketServer {
         request,
         undefined,
         false,
-        hasHeaderCredential ? OWNER_SESSION_ADMISSION : null,
+        hasHeaderCredential
+          ? {
+              ...OWNER_SESSION_ADMISSION,
+              ...(headerCredentialExpiresAt !== null
+                ? { expiresAt: headerCredentialExpiresAt }
+                : {}),
+            }
+          : null,
       );
     } finally {
       ws.resume();
@@ -1938,6 +1954,7 @@ export class VoiceAssistantWebSocketServer {
         ),
       };
     pending.admission = admitted;
+    this.scheduleCredentialExpiry(ws, admitted.expiresAt, pending.connectionLogger);
     pending.identity.clientId = clientId;
     if (message.appVersion) {
       pending.identity.appVersion = message.appVersion;
@@ -2460,6 +2477,32 @@ export class VoiceAssistantWebSocketServer {
     return this.voiceCallerContexts.get(callerAgentId) ?? null;
   }
 
+  /** FORK(oidc): closes the socket when the credential that admitted it expires. */
+  private scheduleCredentialExpiry(
+    ws: WebSocketLike,
+    expiresAt: number | undefined,
+    logger: pino.Logger,
+  ): void {
+    if (expiresAt === undefined) return;
+    const close = () => {
+      this.credentialExpiryTimers.delete(ws);
+      logger.info("Closing connection: its OIDC credential expired");
+      try {
+        ws.close(WS_CLOSE_CREDENTIAL_EXPIRED, "Credential expired");
+      } catch {
+        // The transport may already be closed.
+      }
+    };
+    const delay = expiresAt - Date.now();
+    if (delay <= 0) {
+      close();
+      return;
+    }
+    const timer = setTimeout(close, Math.min(delay, MAX_TIMER_DELAY_MS));
+    (timer as unknown as { unref?: () => void }).unref?.();
+    this.credentialExpiryTimers.set(ws, timer);
+  }
+
   private async detachSocket(
     ws: WebSocketLike,
     details: {
@@ -2468,6 +2511,11 @@ export class VoiceAssistantWebSocketServer {
       error?: Error;
     },
   ): Promise<void> {
+    const expiryTimer = this.credentialExpiryTimers.get(ws);
+    if (expiryTimer) {
+      clearTimeout(expiryTimer);
+      this.credentialExpiryTimers.delete(ws);
+    }
     this.hostLinks.get(ws)?.close();
     this.hostLinks.delete(ws);
 

@@ -16,6 +16,7 @@ const OidcDiscoverySchema = z.object({
   token_endpoint: z.string().url(),
   jwks_uri: z.string().url(),
   end_session_endpoint: z.string().url().optional(),
+  revocation_endpoint: z.string().url().optional(),
 });
 
 type OidcDiscovery = z.infer<typeof OidcDiscoverySchema>;
@@ -48,7 +49,14 @@ export interface OidcPublicDescriptor {
 }
 
 export type OidcTokenGrant =
-  | { grantType: "authorization_code"; code: string; codeVerifier: string; redirectUri: string }
+  | {
+      grantType: "authorization_code";
+      code: string;
+      codeVerifier: string;
+      redirectUri: string;
+      /** The nonce the app put in the authorization request; the ID token must echo it. */
+      nonce: string;
+    }
   | { grantType: "refresh_token"; refreshToken: string };
 
 export interface OidcTokenSet {
@@ -79,6 +87,19 @@ function looksLikeJwt(token: string): boolean {
 function readStringClaim(payload: JWTPayload, claim: string): string | null {
   const value = payload[claim];
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/**
+ * True when the token was issued to this client. An `azp` (or RFC 9068 `client_id`)
+ * must name the client; without one the client must be the token's only audience.
+ * Otherwise a token minted for another client that lists us, or an access token for
+ * a shared API audience, would be accepted.
+ */
+function isIssuedToClient(payload: JWTPayload, clientId: string): boolean {
+  const authorizedParty = readStringClaim(payload, "azp") ?? readStringClaim(payload, "client_id");
+  if (authorizedParty !== null) return authorizedParty === clientId;
+  const { aud } = payload;
+  return aud === clientId || (Array.isArray(aud) && aud.length === 1 && aud[0] === clientId);
 }
 
 function readListClaim(payload: JWTPayload, claim: string): string[] {
@@ -131,7 +152,12 @@ export class OidcVerifier {
     return looksLikeJwt(token);
   }
 
-  async verify(token: string): Promise<OidcVerification> {
+  /**
+   * Verifies a presented token. `nonce` is set only for the ID token returned by
+   * an authorization-code exchange; refreshed ID tokens and tokens presented at
+   * admission are not tied to a pending authorization request.
+   */
+  async verify(token: string, options?: { nonce?: string }): Promise<OidcVerification> {
     if (!looksLikeJwt(token)) return { ok: false, reason: "invalid_token" };
     let keySet: ReturnType<typeof createRemoteJWKSet>;
     try {
@@ -154,6 +180,14 @@ export class OidcVerifier {
         { errorName: error instanceof Error ? error.name : "unknown" },
         "Rejected OIDC token",
       );
+      return { ok: false, reason: "invalid_token" };
+    }
+    if (!isIssuedToClient(payload, this.settings.clientId)) {
+      this.logger.info("Rejected OIDC token issued to another client");
+      return { ok: false, reason: "invalid_token" };
+    }
+    if (options?.nonce !== undefined && payload.nonce !== options.nonce) {
+      this.logger.info("Rejected OIDC ID token with a nonce that does not match the sign-in");
       return { ok: false, reason: "invalid_token" };
     }
     const identity: OidcIdentity = {
@@ -191,14 +225,7 @@ export class OidcVerifier {
       "Content-Type": "application/x-www-form-urlencoded",
       Accept: "application/json",
     };
-    if (this.settings.clientSecret) {
-      const basic = Buffer.from(
-        `${encodeURIComponent(this.settings.clientId)}:${encodeURIComponent(this.settings.clientSecret)}`,
-      ).toString("base64");
-      headers.Authorization = `Basic ${basic}`;
-    } else {
-      body.set("client_id", this.settings.clientId);
-    }
+    headers.Authorization = this.clientBasicAuthorization();
 
     let response: Response;
     try {
@@ -231,7 +258,10 @@ export class OidcVerifier {
         "The OIDC provider did not return an ID token. Request the openid scope.",
       );
     }
-    const verification = await this.verify(result.id_token);
+    const verification = await this.verify(
+      result.id_token,
+      grant.grantType === "authorization_code" ? { nonce: grant.nonce } : undefined,
+    );
     if (!verification.ok) {
       throw new OidcTokenExchangeError(
         verification.reason === "not_allowed" ? "not_allowed" : "provider_error",
@@ -247,14 +277,59 @@ export class OidcVerifier {
     };
   }
 
+  /**
+   * Revokes a refresh token at the provider (RFC 7009). Providers without a
+   * revocation endpoint leave the token to expire on its own.
+   */
+  async revoke(refreshToken: string): Promise<{ revoked: boolean }> {
+    let discovery: OidcDiscovery;
+    try {
+      discovery = await this.loadDiscovery();
+    } catch (error) {
+      this.logger.warn({ err: error }, "OIDC provider discovery failed");
+      throw new OidcTokenExchangeError("provider_error", "The OIDC provider is unreachable.");
+    }
+    if (!discovery.revocation_endpoint) return { revoked: false };
+    const body = new URLSearchParams({ token: refreshToken, token_type_hint: "refresh_token" });
+    let response: Response;
+    try {
+      response = await this.fetchImpl(discovery.revocation_endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Authorization: this.clientBasicAuthorization(),
+        },
+        body: body.toString(),
+        signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
+      });
+    } catch (error) {
+      this.logger.warn({ err: error }, "OIDC revocation endpoint request failed");
+      throw new OidcTokenExchangeError("provider_error", "The OIDC provider is unreachable.");
+    }
+    // RFC 7009: the provider answers 200 for unknown or already revoked tokens too.
+    if (!response.ok) {
+      this.logger.info({ status: response.status }, "OIDC revocation endpoint rejected the token");
+      throw new OidcTokenExchangeError(
+        "provider_error",
+        `Revocation endpoint returned ${response.status}`,
+      );
+    }
+    return { revoked: true };
+  }
+
+  private clientBasicAuthorization(): string {
+    const credentials = `${encodeURIComponent(this.settings.clientId)}:${encodeURIComponent(this.settings.clientSecret)}`;
+    return `Basic ${Buffer.from(credentials).toString("base64")}`;
+  }
+
   private isAllowed(payload: JWTPayload, identity: OidcIdentity): boolean {
-    if (!this.hasAuthorizationRules) return true;
+    if (!this.hasAuthorizationRules) return this.settings.allowAnyUser === true;
     const { allowedSubjects, allowedEmails, allowedGroups } = this.settings;
     if (allowedSubjects?.includes(identity.subject)) return true;
     if (identity.email && allowedEmails?.length) {
       const email = identity.email.toLowerCase();
       // An unverified email is attacker-controlled on many providers.
-      const verified = payload.email_verified !== false;
+      const verified = payload.email_verified === true;
       if (verified && allowedEmails.some((allowed) => allowed.toLowerCase() === email)) return true;
     }
     if (allowedGroups?.length) {

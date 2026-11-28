@@ -1,5 +1,12 @@
 import type { HostConnection, HostProfile } from "@/types/host-connection";
-import { OidcTokenRequestError, oidcTargetKey, requestOidcTokens } from "./oidc-http";
+import {
+  isOidcTransportSecure,
+  type OidcDaemonTarget,
+  OidcTokenRequestError,
+  oidcTargetKey,
+  requestOidcTokens,
+  revokeOidcRefreshToken,
+} from "./oidc-http";
 import { clearOidcSession, getOidcSession, saveOidcSession } from "./oidc-session-store";
 
 // FORK(oidc): first-class OIDC sign-in for direct connections. See .fork/README.md.
@@ -15,6 +22,7 @@ const refreshesInFlight = new Map<string, Promise<string | undefined>>();
 export async function resolveOidcToken(endpoint: string): Promise<string | undefined> {
   const session = await getOidcSession({ endpoint });
   if (!session) return undefined;
+  if (!isOidcTransportSecure({ endpoint, useTls: session.useTls })) return undefined;
   if (session.expiresAt - Date.now() > REFRESH_MARGIN_MS) return session.idToken;
   if (!session.refreshToken) return undefined;
 
@@ -30,7 +38,13 @@ export async function resolveOidcToken(endpoint: string): Promise<string | undef
       );
       await saveOidcSession(
         { endpoint },
-        { ...tokens, refreshToken: tokens.refreshToken ?? refreshToken, useTls: session.useTls },
+        {
+          ...tokens,
+          refreshToken: tokens.refreshToken ?? refreshToken,
+          useTls: session.useTls,
+          issuer: session.issuer,
+          clientId: session.clientId,
+        },
       );
       return tokens.idToken;
     } catch (error) {
@@ -49,23 +63,67 @@ export async function resolveOidcToken(endpoint: string): Promise<string | undef
 }
 
 /**
- * Picks the endpoint whose OIDC session authenticates this connection: the
- * connection's own for direct TCP, otherwise the host's first direct TCP
- * connection, so relay and routed connections to the same daemon reuse it.
+ * The endpoints whose OIDC session may authenticate this connection, in order:
+ * the connection's own direct TCP endpoint, then the host's other direct TCP
+ * endpoints. A host reached through several addresses (LAN and Tailscale, or the
+ * app's auto-detected local route) signs in through one of them; every route to
+ * the same saved host reuses that session. Relay and routed connections only
+ * have the host's direct endpoints to draw from. A connection without TLS to
+ * another machine never carries a token.
  */
-export function oidcEndpointForConnection(
+export function oidcEndpointsForConnection(
   host: Pick<HostProfile, "connections">,
   connection: HostConnection,
-): string | null {
-  if (connection.type === "directTcp") return connection.endpoint;
-  if (connection.type === "directSocket" || connection.type === "directPipe") return null;
-  return host.connections.find((candidate) => candidate.type === "directTcp")?.endpoint ?? null;
+): string[] {
+  if (connection.type === "directSocket" || connection.type === "directPipe") return [];
+  if (connection.type === "directTcp") {
+    const target = { endpoint: connection.endpoint, useTls: connection.useTls ?? false };
+    if (!isOidcTransportSecure(target)) return [];
+  }
+  const own = connection.type === "directTcp" ? [connection.endpoint] : [];
+  const others = host.connections.flatMap((candidate) =>
+    candidate.type === "directTcp" ? [candidate.endpoint] : [],
+  );
+  const seen = new Set<string>();
+  return [...own, ...others].filter((endpoint) => {
+    const key = oidcTargetKey({ endpoint });
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export function createOidcTokenResolver(
   host: Pick<HostProfile, "connections">,
   connection: HostConnection,
 ): (() => Promise<string | undefined>) | undefined {
-  const endpoint = oidcEndpointForConnection(host, connection);
-  return endpoint ? () => resolveOidcToken(endpoint) : undefined;
+  const endpoints = oidcEndpointsForConnection(host, connection);
+  if (endpoints.length === 0) return undefined;
+  return async () => {
+    for (const endpoint of endpoints) {
+      const token = await resolveOidcToken(endpoint);
+      if (token) return token;
+    }
+    return undefined;
+  };
+}
+
+/**
+ * Signs out of a host: revokes the refresh token at the provider through the
+ * daemon, then forgets the session. The local session is removed even when
+ * revocation fails, so the reported error never leaves the user signed in.
+ */
+export async function signOutOidc(target: OidcDaemonTarget): Promise<void> {
+  const session = await getOidcSession(target);
+  if (!session) return;
+  let revocationError: unknown = null;
+  if (session.refreshToken && isOidcTransportSecure(target)) {
+    try {
+      await revokeOidcRefreshToken(target, session.refreshToken);
+    } catch (error) {
+      revocationError = error;
+    }
+  }
+  await clearOidcSession(target);
+  if (revocationError) throw revocationError;
 }

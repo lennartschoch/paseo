@@ -3,7 +3,7 @@ import type pino from "pino";
 import { z } from "zod";
 import type { DaemonAuthConfig } from "./auth.js";
 import { OidcTokenExchangeError, OidcVerifier, type OidcTokenGrant } from "./oidc-auth.js";
-import type { OidcAuthSettings } from "./oidc-auth-settings.js";
+import { type OidcAuthSettings, OidcAuthSettingsSchema } from "./oidc-auth-settings.js";
 
 // FORK(oidc): first-class OIDC sign-in for direct connections. See .fork/README.md.
 //
@@ -17,12 +17,15 @@ const TokenRequestSchema = z.discriminatedUnion("grantType", [
     code: z.string().min(1).max(4096),
     codeVerifier: z.string().min(43).max(128),
     redirectUri: z.string().min(1).max(2048),
+    nonce: z.string().min(16).max(256),
   }),
   z.object({
     grantType: z.literal("refresh_token"),
     refreshToken: z.string().min(1).max(8192),
   }),
 ]);
+
+const RevokeRequestSchema = z.object({ refreshToken: z.string().min(1).max(8192) });
 
 const TOKEN_REQUESTS_PER_MINUTE = 60;
 
@@ -37,7 +40,10 @@ export function createDaemonAuth(input: {
   logger: pino.Logger;
 }): DaemonAuthConfig {
   const { app, auth, localCredential, logger } = input;
-  const oidcVerifier = auth?.oidc ? new OidcVerifier({ settings: auth.oidc, logger }) : undefined;
+  // Settings normally arrive validated from config; embedders pass them directly.
+  const oidcVerifier = auth?.oidc
+    ? new OidcVerifier({ settings: OidcAuthSettingsSchema.parse(auth.oidc), logger })
+    : undefined;
   mountOidcAuthRoutes({ app, verifier: oidcVerifier, logger });
   return {
     ...(auth?.password ? { password: auth.password } : {}),
@@ -59,7 +65,7 @@ export function logOidcAuthStatus(input: {
   );
   if (!verifier.hasAuthorizationRules) {
     logger.warn(
-      "OIDC has no allowedSubjects/allowedEmails/allowedGroups: every user the provider authenticates for this client gets owner access",
+      "OIDC allowAnyUser is set: every user the provider authenticates for this client gets owner access",
     );
   }
 }
@@ -113,6 +119,20 @@ async function exchangeOidcGrant(input: {
   }
 }
 
+async function revokeOidcToken(input: {
+  verifier: OidcVerifier;
+  refreshToken: string;
+  res: express.Response;
+}): Promise<void> {
+  const { verifier, refreshToken, res } = input;
+  try {
+    res.json(await verifier.revoke(refreshToken));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Revocation failed.";
+    res.status(502).json({ error: "provider_error", message });
+  }
+}
+
 export function mountOidcAuthRoutes(input: {
   app: express.Express;
   verifier: OidcVerifier | undefined;
@@ -126,10 +146,10 @@ export function mountOidcAuthRoutes(input: {
 
   let windowStartedAt = 0;
   let requestsInWindow = 0;
-  app.post("/api/auth/oidc/token", express.json({ limit: "16kb" }), (req, res) => {
+  function admitProviderRequest(res: express.Response): OidcVerifier | null {
     if (!verifier) {
       res.status(404).json({ error: "OIDC is not configured on this daemon." });
-      return;
+      return null;
     }
     const now = Date.now();
     if (now - windowStartedAt > 60_000) {
@@ -139,13 +159,31 @@ export function mountOidcAuthRoutes(input: {
     requestsInWindow += 1;
     if (requestsInWindow > TOKEN_REQUESTS_PER_MINUTE) {
       res.status(429).json({ error: "Too many sign-in attempts. Try again shortly." });
-      return;
+      return null;
     }
+    return verifier;
+  }
+
+  app.post("/api/auth/oidc/token", express.json({ limit: "16kb" }), (req, res) => {
+    const active = admitProviderRequest(res);
+    if (!active) return;
     const parsed = TokenRequestSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: "invalid_request" });
       return;
     }
-    void exchangeOidcGrant({ verifier, grant: parsed.data, res, logger });
+    void exchangeOidcGrant({ verifier: active, grant: parsed.data, res, logger });
+  });
+
+  // Unauthenticated like the token route: whoever holds a refresh token may revoke it.
+  app.post("/api/auth/oidc/revoke", express.json({ limit: "16kb" }), (req, res) => {
+    const active = admitProviderRequest(res);
+    if (!active) return;
+    const parsed = RevokeRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "invalid_request" });
+      return;
+    }
+    void revokeOidcToken({ verifier: active, refreshToken: parsed.data.refreshToken, res });
   });
 }
