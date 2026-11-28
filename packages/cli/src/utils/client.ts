@@ -199,6 +199,10 @@ async function connectSelectedDaemon(options: ConnectOptions): Promise<DaemonCli
     ...(credential?.kind === "localCredential"
       ? { localCredential: () => readLocalCredentialForTarget(home, host) ?? undefined }
       : {}),
+    // FORK(oidc): an ID token for daemons with daemon.auth.oidc. See .fork/README.md.
+    ...(!credential && process.env.PASEO_OIDC_TOKEN
+      ? { oidcToken: () => process.env.PASEO_OIDC_TOKEN }
+      : {}),
     connectTimeoutMs: timeout,
     reconnect: { enabled: false },
   });

@@ -256,6 +256,68 @@
             "password": {
               "type": "string",
               "pattern": "^\\$2[aby]\\$\\d{2}\\$[./A-Za-z0-9]{53}$"
+            },
+            "oidc": {
+              "type": "object",
+              "properties": {
+                "issuer": {
+                  "type": "string",
+                  "format": "uri",
+                  "description": "OIDC issuer URL, e.g. https://auth.example.com"
+                },
+                "clientId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "clientSecret": {
+                  "description": "Set for a confidential client; the daemon performs the token exchange.",
+                  "type": "string",
+                  "minLength": 1
+                },
+                "scopes": {
+                  "description": "Scopes the app requests. Defaults to openid profile email groups offline_access.",
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "audiences": {
+                  "description": "Extra accepted token audiences besides clientId.",
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "allowedSubjects": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "allowedEmails": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "allowedGroups": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "groupsClaim": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": ["issuer", "clientId"],
+              "additionalProperties": false
             }
           },
           "additionalProperties": false

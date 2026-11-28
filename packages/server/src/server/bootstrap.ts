@@ -187,9 +187,12 @@ import { withTimeout } from "../utils/promise-timeout.js";
 import { isHostnameAllowed, type HostnamesConfig } from "./hostnames.js";
 import {
   createRequireBearerMiddleware,
+  isDaemonAuthRequired,
   isAgentMcpRequestAuthorized,
   type DaemonAuthConfig,
 } from "./auth.js";
+import { createDaemonAuth, logOidcAuthStatus } from "./oidc-auth-routes.js";
+import type { OidcAuthSettings } from "./oidc-auth-settings.js";
 import { deleteLocalCredential, writeLocalCredential } from "./local-credential.js";
 import { createWebUiMiddleware } from "./web-ui.js";
 import { WorkspaceAutoName } from "./workspace-auto-name.js";
@@ -419,7 +422,8 @@ export interface PaseoDaemonConfig {
     distDir: string | null;
   };
   appBaseUrl?: string;
-  auth?: DaemonAuthConfig;
+  // FORK(oidc): oidc settings come from daemon.auth.oidc or PASEO_OIDC_*. See .fork/README.md.
+  auth?: DaemonAuthConfig & { oidc?: OidcAuthSettings };
   openai?: PaseoOpenAIConfig;
   speech?: PaseoSpeechConfig;
   voiceLlmProvider?: AgentProvider | null;
@@ -831,7 +835,15 @@ export async function createPaseoDaemon(
   mountWebUi(app, config, logger);
 
   let localCredential: string | null = null;
-  const daemonAuth = { ...config.auth, localCredential: () => localCredential };
+  // FORK(oidc): see .fork/README.md.
+  const daemonAuth = createDaemonAuth({
+    app,
+    auth: config.auth,
+    localCredential: () => localCredential,
+    logger,
+  });
+  const oidcVerifier = daemonAuth.oidcVerifier;
+  const daemonAuthRequired = isDaemonAuthRequired(daemonAuth);
   app.use(
     createRequireBearerMiddleware(daemonAuth, (context) => {
       logger.warn(context, "Rejected HTTP request with invalid daemon password");
@@ -1727,6 +1739,7 @@ export async function createPaseoDaemon(
       if (
         !(await isAgentMcpRequestAuthorized({
           password: config.auth?.password,
+          oidcVerifier,
           capabilityToken: agentMcpAuthToken,
           authorizationHeader: req.header("authorization"),
         }))
@@ -1879,7 +1892,7 @@ export async function createPaseoDaemon(
                 {
                   host: boundListenTarget.host,
                   port: boundListenTarget.port,
-                  authRequired: !!config.auth?.password,
+                  authRequired: daemonAuthRequired,
                   elapsed: elapsed(),
                 },
                 `Server listening on http://${boundListenTarget.host}:${boundListenTarget.port}`,
@@ -1888,7 +1901,7 @@ export async function createPaseoDaemon(
               logger.info(
                 {
                   path: boundListenTarget.path,
-                  authRequired: !!config.auth?.password,
+                  authRequired: daemonAuthRequired,
                   elapsed: elapsed(),
                 },
                 `Server listening on ${boundListenTarget.path}`,
@@ -1897,6 +1910,7 @@ export async function createPaseoDaemon(
             if (config.auth?.password) {
               logger.info("Daemon password authentication enabled");
             }
+            logOidcAuthStatus({ settings: config.auth?.oidc, verifier: oidcVerifier, logger });
 
             wsServer = new VoiceAssistantWebSocketServer(
               logger,

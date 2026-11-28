@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { app, ipcMain, powerMonitor } from "electron";
 import log from "electron-log/main";
+import { authorizeOidcInWindow } from "../features/oidc-authorize.js";
 import {
   resolvePaseoHome,
   startDaemonInstance,
@@ -574,6 +575,8 @@ export function createDaemonCommandHandlers(): Record<string, DesktopCommandHand
     get_cli_install_status: () => getCliInstallStatus(),
     read_legacy_skill_selection: () => readLegacySkillSelection(),
     delete_legacy_skill_selection: () => deleteLegacySkillSelection(),
+    // FORK(oidc): see .fork/README.md.
+    oidc_authorize: (args) => authorizeOidcInWindow(args),
   };
 }
 

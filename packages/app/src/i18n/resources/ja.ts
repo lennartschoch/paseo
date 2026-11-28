@@ -1953,6 +1953,8 @@ export const ja: TranslationResources = {
       confirmAction: "オフにする",
     },
   },
+  // FORK(oidc): English until translated. See .fork/README.md.
+  oidc: en.oidc,
   pairing: {
     hostPassword: {
       title: "{{host}} のパスワード",

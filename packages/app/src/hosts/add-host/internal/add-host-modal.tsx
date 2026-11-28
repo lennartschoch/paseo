@@ -17,6 +17,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { PairingTargetTracker } from "@/components/pair-link-credentials";
 import { buildDirectConnectionUri } from "@/components/direct-connection-host";
+import { OidcSignInAbortedError, probeWithOidcSignIn } from "@/hosts/oidc/probe-with-oidc";
 
 const FLEX_ONE_STYLE = { flex: 1 } as const;
 
@@ -307,16 +308,23 @@ function AddHostModalContent({ visible, onClose, onCancel, onSaved }: AddHostMod
       setIsSaving(true);
       setErrorMessage("");
 
-      const { profile, serverId, hostname } = await probeAndUpsertDirectConnection({
-        endpoint: connection.endpoint,
-        useTls: connection.useTls,
-        ...(connection.password ? { password: connection.password } : {}),
+      // FORK(oidc): a daemon that asks for a credential and offers OIDC signs in here.
+      const { profile, serverId, hostname } = await probeWithOidcSignIn({
+        target: { endpoint: connection.endpoint, useTls: connection.useTls },
+        hasPassword: Boolean(connection.password),
+        probe: () =>
+          probeAndUpsertDirectConnection({
+            endpoint: connection.endpoint,
+            useTls: connection.useTls,
+            ...(connection.password ? { password: connection.password } : {}),
+          }),
       });
       const isNewHost = !daemons.some((daemon) => daemon.serverId === serverId);
 
       onSaved?.({ profile, serverId, hostname, isNewHost });
       handleClose();
     } catch (error) {
+      if (error instanceof OidcSignInAbortedError) return;
       const {
         title,
         detail,

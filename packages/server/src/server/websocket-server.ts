@@ -120,7 +120,8 @@ import {
   extractHttpBearerToken,
   extractWsBearerProtocol,
   extractWsBearerToken,
-  isBearerTokenValidAsync,
+  isDaemonAuthRequired,
+  isDaemonBearerTokenAuthorizedAsync,
   type DaemonAuthConfig,
 } from "./auth.js";
 import { resolveSessionAdmission } from "./session-admission-auth.js";
@@ -963,11 +964,11 @@ export class VoiceAssistantWebSocketServer {
     wsConfig: WebSocketServerConfig,
     auth: DaemonAuthConfig | undefined,
   ): WebSocketServer {
-    const password = auth?.password;
+    const authRequired = isDaemonAuthRequired(auth);
     const wss = new WebSocketServer({
       noServer: true,
       maxPayload: MAX_WEBSOCKET_MESSAGE_BYTES,
-      handleProtocols: (protocols) => selectWebSocketProtocol(protocols, password),
+      handleProtocols: (protocols) => selectWebSocketProtocol(protocols, authRequired),
       verifyClient: ({ req }, callback) => {
         this.verifyWsUpgrade(
           req,
@@ -979,7 +980,7 @@ export class VoiceAssistantWebSocketServer {
     });
     wss.on("connection", (ws, request) => {
       const socket = Object.assign(ws, { maxFrameBytes: DIRECT_WEBSOCKET_FRAME_BYTES });
-      void this.attachAuthenticatedSocket(socket, request, password);
+      void this.attachAuthenticatedSocket(socket, request, auth);
     });
     return wss;
   }
@@ -1086,7 +1087,7 @@ export class VoiceAssistantWebSocketServer {
   private async attachAuthenticatedSocket(
     ws: WebSocket,
     request: IncomingMessage,
-    password: string | undefined,
+    auth: DaemonAuthConfig | undefined,
   ): Promise<void> {
     // Header validation is asynchronous. Buffer frames until the socket has a
     // pending hello handler so an eager client cannot lose its first message.
@@ -1097,9 +1098,10 @@ export class VoiceAssistantWebSocketServer {
       const token =
         extractHttpBearerToken(request.headers.authorization) ?? extractWsBearerToken(protocol);
       const hasHeaderCredential = token !== null;
-      if (password && hasHeaderCredential) {
+      // FORK(oidc): "auth required" includes OIDC-only daemons; see .fork/README.md.
+      if (isDaemonAuthRequired(auth) && hasHeaderCredential) {
         const requestMetadata = extractSocketRequestMetadata(request);
-        const isAuthorized = await isBearerTokenValidAsync({ password, token });
+        const isAuthorized = await isDaemonBearerTokenAuthorizedAsync({ auth, token });
         if (!isAuthorized) {
           const reason = "Incorrect password";
           this.logger.warn(
@@ -2013,6 +2015,7 @@ export class VoiceAssistantWebSocketServer {
         credential: message.auth,
         passwordHash: this.passwordHash,
         localCredential: this.credentialSource?.localCredential?.() ?? null,
+        oidcVerifier: this.credentialSource?.oidcVerifier,
       });
       if (this.pendingConnections.get(ws) !== pending) return false;
       if ("rejection" in resolved) {
@@ -3659,11 +3662,8 @@ export function isWebSocketSameOrigin(
   return isLoopbackAlias(originUrl.hostname) && isLoopbackAlias(requestAuthority.hostname);
 }
 
-function selectWebSocketProtocol(
-  protocols: Set<string>,
-  password: string | undefined,
-): string | false {
-  if (!password) {
+function selectWebSocketProtocol(protocols: Set<string>, authRequired: boolean): string | false {
+  if (!authRequired) {
     return protocols.values().next().value ?? false;
   }
 

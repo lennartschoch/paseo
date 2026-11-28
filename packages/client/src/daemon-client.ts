@@ -266,6 +266,7 @@ function compatibleBearerPassword(password: string | null): string | null {
 type HelloAuth =
   | { kind: "password"; password: string }
   | { kind: "localCredential"; token: string }
+  | { kind: "oidc"; token: string }
   | undefined;
 
 export type DaemonAuthFailureReason = "password_required" | "incorrect_password";
@@ -294,10 +295,13 @@ function authFailureFromLegacyClose(event: unknown): DaemonAuthFailureReason | n
 function chooseConnectionAuth(
   config: DaemonClientConfig,
   localCredential: string | undefined,
+  oidcToken?: string,
 ): { helloAuth: HelloAuth; headers: Record<string, string>; protocols?: string[] } {
   const password = normalizePassword(config.password);
   let helloAuth: HelloAuth;
   if (localCredential) helloAuth = { kind: "localCredential", token: localCredential };
+  // FORK(oidc): an OIDC session wins over a saved password. See .fork/README.md.
+  else if (oidcToken) return { helloAuth: { kind: "oidc", token: oidcToken }, headers: {} };
   else if (password) helloAuth = { kind: "password", password };
   const headers: Record<string, string> = {};
   const compatibleBearer = localCredential ? null : compatibleBearerPassword(password);
@@ -315,6 +319,13 @@ function resolveConnectionAuth(
   config: DaemonClientConfig,
 ): ReturnType<typeof chooseConnectionAuth> | Promise<ReturnType<typeof chooseConnectionAuth>> {
   const resolution = config.localCredential?.();
+  // FORK(oidc): resolved per connection attempt so reconnects pick up refreshed tokens.
+  if (config.oidcToken) {
+    const oidcToken = config.oidcToken;
+    return Promise.resolve(resolution).then(async (credential) =>
+      chooseConnectionAuth(config, credential, credential ? undefined : await oidcToken()),
+    );
+  }
   if (resolution instanceof Promise) {
     return resolution.then((credential) => chooseConnectionAuth(config, credential));
   }
@@ -453,6 +464,11 @@ export interface DaemonClientConfig {
   runtimeGeneration?: number | null;
   password?: string;
   localCredential?: () => string | undefined | Promise<string | undefined>;
+  /**
+   * FORK(oidc): returns a current OIDC ID token for daemons configured with
+   * `daemon.auth.oidc`. Called before every connection attempt.
+   */
+  oidcToken?: () => string | undefined | Promise<string | undefined>;
   authHeader?: string;
   suppressSendErrors?: boolean;
   transportFactory?: DaemonTransportFactory;

@@ -2,12 +2,37 @@ import { compare, hashSync } from "bcryptjs";
 import { timingSafeEqual } from "node:crypto";
 import type { RequestHandler } from "express";
 import { matchesLocalCredential } from "./local-credential.js";
+import type { OidcVerifier } from "./oidc-auth.js";
 
 export const DAEMON_PASSWORD_BCRYPT_COST = 12;
 
 export interface DaemonAuthConfig {
   password?: string;
   localCredential?: () => string | null;
+  // FORK(oidc): set when daemon.auth.oidc is configured. See .fork/README.md.
+  oidcVerifier?: OidcVerifier;
+}
+
+/** A daemon with a password or OIDC configured rejects unauthenticated callers. */
+export function isDaemonAuthRequired(auth: DaemonAuthConfig | undefined): boolean {
+  return Boolean(auth?.password || auth?.oidcVerifier);
+}
+
+/**
+ * Accepts the daemon password or, when OIDC is configured, a valid OIDC token.
+ * Open when neither is configured.
+ */
+export async function isDaemonBearerTokenAuthorizedAsync(input: {
+  auth: DaemonAuthConfig | undefined;
+  token: string | null;
+}): Promise<boolean> {
+  const { auth, token } = input;
+  if (!isDaemonAuthRequired(auth)) return true;
+  if (token === null) return false;
+  // JWT-shaped tokens try OIDC first so an OIDC caller does not pay for a bcrypt compare.
+  const verifier = auth?.oidcVerifier;
+  if (verifier?.canVerify(token) && (await verifier.verify(token)).ok) return true;
+  return auth?.password ? compare(token, auth.password) : false;
 }
 
 export interface BearerAuthRejectContext {
@@ -78,9 +103,8 @@ export function createRequireBearerMiddleware(
   auth: DaemonAuthConfig | undefined,
   onReject?: (context: BearerAuthRejectContext) => void,
 ): RequestHandler {
-  const password = auth?.password;
   return (req, res, next) => {
-    if (!password || shouldBypassBearerAuth(req.method, req.path)) {
+    if (!isDaemonAuthRequired(auth) || shouldBypassBearerAuth(req.method, req.path)) {
       next();
       return;
     }
@@ -94,7 +118,7 @@ export function createRequireBearerMiddleware(
           localCredential !== undefined &&
           token !== null &&
           matchesLocalCredential(localCredential, token);
-        if (!isLocal && !(await isBearerTokenValidAsync({ password, token }))) {
+        if (!isLocal && !(await isDaemonBearerTokenAuthorizedAsync({ auth, token }))) {
           onReject?.({
             path: req.path,
             method: req.method,
@@ -135,10 +159,12 @@ export function shouldBypassBearerAuth(method: string, path: string): boolean {
  */
 export async function isAgentMcpRequestAuthorized(input: {
   password: string | undefined;
+  oidcVerifier?: OidcVerifier;
   capabilityToken: string | null;
   authorizationHeader: string | undefined;
 }): Promise<boolean> {
-  if (!input.password) {
+  const auth = { password: input.password, oidcVerifier: input.oidcVerifier };
+  if (!isDaemonAuthRequired(auth)) {
     return true;
   }
   const token = extractHttpBearerToken(input.authorizationHeader);
@@ -151,5 +177,5 @@ export async function isAgentMcpRequestAuthorized(input: {
       return true;
     }
   }
-  return isBearerTokenValidAsync({ password: input.password, token });
+  return isDaemonBearerTokenAuthorizedAsync({ auth, token });
 }

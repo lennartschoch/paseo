@@ -8,7 +8,7 @@ Upstream `getpaseo/paseo` is the `upstream` remote. The fork is `origin`.
 ## Branches and tags
 
 - `main` is the fork. It carries upstream stable releases plus the pending fixes and a small set
-  of fork-only patches (release feed, version scheme, daemon updater gate).
+  of fork-only patches (release feed, version scheme, daemon updater gate, OIDC sign-in).
 - Upstream releases (`vX.Y.Z` and `vX.Y.Z-beta.N`) are merged into `main`. Never rebase `main`;
   the history is append-only so the fix commits stay reachable.
 - `main` carries the upstream version. A fork version lives only in a tag, not in a version-bump
@@ -172,3 +172,4 @@ Keep this list small; every entry is a merge conflict the next upstream sync may
 | `.github/workflows/deploy-website.yml`           | Guards the upstream deploy job so a fork release doesn't run it            |
 | `.github/workflows/fork-release.yml`             | The fork release pipeline                                                  |
 | `scripts/fork/`                                  | Versioning, sync, and daemon packaging                                     |
+| `FORK(oidc)` sites, `rg "FORK\(oidc\)"`          | OIDC sign-in for direct connections; see [oidc.md](oidc.md)                |

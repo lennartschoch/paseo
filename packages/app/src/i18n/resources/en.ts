@@ -1962,6 +1962,28 @@ export const en = {
       confirmAction: "Turn off",
     },
   },
+  // FORK(oidc): single sign-on for direct connections. See .fork/README.md.
+  oidc: {
+    host: {
+      title: "Single sign-on",
+      label: "OIDC",
+      signedOut: "Not signed in. This host accepts single sign-on.",
+      expired: "Your session expired. Sign in again.",
+      signedInAs: "Signed in as {{name}}",
+      signIn: "Sign in",
+      signInAgain: "Sign in again",
+      signOut: "Sign out",
+    },
+    callback: {
+      completing: "Finishing sign-in…",
+      failedTitle: "Sign-in failed",
+      back: "Back",
+    },
+    errors: {
+      generic: "Sign-in failed.",
+      unavailable: "This host does not offer single sign-on.",
+    },
+  },
   pairing: {
     hostPassword: {
       title: "Password for {{host}}",

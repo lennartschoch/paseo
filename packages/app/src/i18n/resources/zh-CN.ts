@@ -1914,6 +1914,8 @@ export const zhCN: TranslationResources = {
       confirmAction: "关闭",
     },
   },
+  // FORK(oidc): English until translated. See .fork/README.md.
+  oidc: en.oidc,
   pairing: {
     hostPassword: {
       title: "{{host}} 的密码",

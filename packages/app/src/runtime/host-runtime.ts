@@ -101,6 +101,7 @@ import { projectIconCache } from "@/projects/icon-cache";
 import { createPerformanceTrace } from "@/performance/native-trace";
 import { revokePushNotifications } from "@/push-notifications";
 import { createAppWebSocketFactory } from "./websocket-factory";
+import { createOidcTokenResolver } from "@/hosts/oidc/oidc-token";
 
 export type HostRuntimeConnectionStatus = "idle" | "connecting" | "online" | "offline" | "error";
 export type PairingNavigationTarget = "openProject" | "hostRoot" | "hostSettings";
@@ -573,6 +574,15 @@ function probeIntervalForConnection(
   return PROBE_MAX_BACKOFF_MS;
 }
 
+// FORK(oidc): see .fork/README.md.
+function withOidcToken(
+  host: HostProfile,
+  connection: HostConnection,
+): Pick<DaemonClientConfig, "oidcToken"> {
+  const oidcToken = createOidcTokenResolver(host, connection);
+  return oidcToken ? { oidcToken } : {};
+}
+
 function createDefaultDeps(
   resolveOrigin: (serverId: string) => DaemonClient | null = () => null,
 ): HostRuntimeControllerDeps {
@@ -598,6 +608,8 @@ function createDefaultDeps(
         createPluginClientBundleStore: createHostPluginClientBundleStore,
         ...(host.password ? { password: host.password } : {}),
         localCredential: () => readDesktopManagedLocalCredential(connection),
+        // FORK(oidc): see .fork/README.md.
+        ...withOidcToken(host, connection),
       } satisfies Omit<DaemonClientConfig, "url">;
       if (connection.type === "routed") {
         const origin = resolveOrigin(connection.originServerId);
@@ -690,6 +702,8 @@ function createDefaultDeps(
         ...(host.serverId ? { serverId: host.serverId } : {}),
         ...(host.password ? { password: host.password } : {}),
         localCredential: () => readDesktopManagedLocalCredential(connection),
+        // FORK(oidc): see .fork/README.md.
+        ...withOidcToken(host, connection),
         ...(timeoutMs !== undefined ? { timeoutMs } : {}),
         capabilities: appCapabilities,
         trace: createPerformanceTrace({ host: host.serverId, connection: connection.id }),
@@ -844,8 +858,9 @@ export class HostRuntimeController {
     });
   }
 
-  async updateHost(host: HostProfile): Promise<void> {
-    const passwordChanged = this.host.password !== host.password;
+  async updateHost(host: HostProfile, options?: { credentialsChanged?: boolean }): Promise<void> {
+    // FORK(oidc): an SSO sign-in changes credentials without changing the profile.
+    const passwordChanged = this.host.password !== host.password || !!options?.credentialsChanged;
     const connectionsChanged = !equal(this.host.connections, host.connections);
     if (passwordChanged) {
       this.probeRequestVersion += 1;
@@ -2474,6 +2489,13 @@ export class HostRuntimeStore {
 
   async renameHost(serverId: string, label: string): Promise<void> {
     await this.updateHost(serverId, (host) => ({ ...host, label }));
+  }
+
+  /** FORK(oidc): reconnect with fresh credentials after an SSO sign-in. See .fork/README.md. */
+  async reauthenticateHost(serverId: string): Promise<void> {
+    const controller = this.controllers.get(serverId);
+    const host = this.hosts.find((candidate) => candidate.serverId === serverId);
+    if (controller && host) await controller.updateHost(host, { credentialsChanged: true });
   }
 
   async setHostPassword(serverId: string, password: string): Promise<void> {

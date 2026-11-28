@@ -1970,6 +1970,8 @@ export const ptBR: TranslationResources = {
       confirmAction: "Desativar",
     },
   },
+  // FORK(oidc): English until translated. See .fork/README.md.
+  oidc: en.oidc,
   pairing: {
     hostPassword: {
       title: "Senha de {{host}}",

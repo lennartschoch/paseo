@@ -8618,6 +8618,8 @@ export const WSHelloMessageSchema = z.object({
     .discriminatedUnion("kind", [
       z.object({ kind: z.literal("password"), password: z.string() }),
       z.object({ kind: z.literal("localCredential"), token: z.string() }),
+      // FORK(oidc): clients send this only after /api/auth/oidc reports OIDC. See .fork/README.md.
+      z.object({ kind: z.literal("oidc"), token: z.string() }),
     ])
     .optional(),
   appVersion: z.string().optional(),

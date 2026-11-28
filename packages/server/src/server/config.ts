@@ -21,6 +21,7 @@ import type {
 import { ProviderOverrideSchema } from "./agent/provider-launch-config.js";
 import { AgentProviderSchema } from "@getpaseo/protocol/provider-manifest";
 import { hashDaemonPassword } from "./auth.js";
+import { readOidcAuthSettingsFromEnv } from "./oidc-auth-settings.js";
 import { resolveSpeechConfig } from "./speech/speech-config-resolver.js";
 import { readSpeechSettings } from "./speech/speech-settings.js";
 import { mergeHostnames, parseHostnamesEnv, type HostnamesConfig } from "./hostnames.js";
@@ -497,12 +498,11 @@ function resolveAuthConfig(
   persisted: ReturnType<typeof loadPersistedConfig>,
 ): PaseoDaemonConfig["auth"] {
   const envPassword = env.PASEO_PASSWORD?.trim();
-  if (envPassword) {
-    return { password: hashDaemonPassword(envPassword) };
-  }
-  return persisted.daemon?.auth?.password
-    ? { password: persisted.daemon.auth.password }
-    : undefined;
+  const password = envPassword ? hashDaemonPassword(envPassword) : persisted.daemon?.auth?.password;
+  // FORK(oidc): see .fork/README.md.
+  const oidc = readOidcAuthSettingsFromEnv(env) ?? persisted.daemon?.auth?.oidc;
+  if (!password && !oidc) return undefined;
+  return { ...(password ? { password } : {}), ...(oidc ? { oidc } : {}) };
 }
 
 function resolveWorktreesRoot(
@@ -760,6 +760,7 @@ function resolveCoreDaemonOverridePaths(
   }
   if (env.PASEO_APP_BASE_URL !== undefined) paths.push("app.baseUrl");
   if (env.PASEO_PASSWORD?.trim()) paths.push("daemon.auth.password");
+  if (env.PASEO_OIDC_ISSUER?.trim()) paths.push("daemon.auth.oidc");
   return paths;
 }
 

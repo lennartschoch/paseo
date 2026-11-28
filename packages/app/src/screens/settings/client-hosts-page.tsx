@@ -37,6 +37,7 @@ import {
   type HostProfile,
 } from "@/types/host-connection";
 import { formatLatency } from "@/utils/latency";
+import { HostOidcSection } from "@/hosts/oidc/host-oidc-section";
 
 const ThemedPlus = withUnistyles(Plus);
 const ThemedServer = withUnistyles(Server);
@@ -649,6 +650,8 @@ export function ClientHostDetailPage({
       />
       <HostConnectionError serverId={serverId} />
       <ClientHostRoutesSection host={host} isLocalHost={isLocalDaemon} onAddHost={onAddHost} />
+      {/* FORK(oidc): see .fork/README.md. */}
+      <HostOidcSection host={host} />
       <HostAppearanceSection host={host} />
       <RemoveClientHostSection
         host={host}

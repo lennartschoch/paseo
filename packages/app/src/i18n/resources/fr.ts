@@ -1983,6 +1983,8 @@ export const fr: TranslationResources = {
       confirmAction: "Désactiver",
     },
   },
+  // FORK(oidc): English until translated. See .fork/README.md.
+  oidc: en.oidc,
   pairing: {
     hostPassword: {
       title: "Mot de passe pour {{host}}",

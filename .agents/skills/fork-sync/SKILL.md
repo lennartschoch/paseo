@@ -40,6 +40,10 @@ Exit codes:
      gate on `daemonSelfUpdate`
    - `.github/workflows/deploy-website.yml` — the `github.repository == 'getpaseo/paseo'` guard
    - `.github/workflows/fork-release.yml`, `scripts/fork/`, `.fork/state.json`
+   - every `FORK(oidc)` site (`rg "FORK\(oidc\)"`): OIDC sign-in. Read
+     [`.fork/oidc.md`](../../../.fork/oidc.md#merging-upstream) before resolving a conflict in
+     daemon auth, `hello.auth`, or the host runtime, and run
+     `packages/server/src/server/bootstrap-oidc-auth.test.ts` afterwards.
 3. Run checks before continuing:
    ```bash
    npm run format

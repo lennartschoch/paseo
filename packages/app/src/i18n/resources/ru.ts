@@ -1969,6 +1969,8 @@ export const ru: TranslationResources = {
       confirmAction: "Выключить",
     },
   },
+  // FORK(oidc): English until translated. See .fork/README.md.
+  oidc: en.oidc,
   pairing: {
     hostPassword: {
       title: "Пароль для {{host}}",

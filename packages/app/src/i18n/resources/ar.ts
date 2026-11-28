@@ -1932,6 +1932,8 @@ export const ar: TranslationResources = {
       confirmAction: "إيقاف",
     },
   },
+  // FORK(oidc): English until translated. See .fork/README.md.
+  oidc: en.oidc,
   pairing: {
     hostPassword: {
       title: "كلمة المرور لـ {{host}}",

@@ -123,13 +123,19 @@ export function getConnectionAuthFailureReason(error: unknown): DaemonAuthFailur
 function resolveConnectionCredentials(
   connection: HostConnection,
   options:
-    | { password?: string; localCredential?: DaemonClientConfig["localCredential"] }
+    | {
+        password?: string;
+        localCredential?: DaemonClientConfig["localCredential"];
+        oidcToken?: DaemonClientConfig["oidcToken"];
+      }
     | undefined,
-): Pick<DaemonClientConfig, "password" | "localCredential"> {
+): Pick<DaemonClientConfig, "password" | "localCredential" | "oidcToken"> {
   const password = options?.password;
   return {
     ...(password ? { password } : {}),
     ...(options?.localCredential ? { localCredential: options.localCredential } : {}),
+    // FORK(oidc): see .fork/README.md.
+    ...(options?.oidcToken ? { oidcToken: options.oidcToken } : {}),
   };
 }
 
@@ -142,6 +148,7 @@ export async function buildClientConfig(
     createPluginClientBundleStore?: DaemonClientConfig["createPluginClientBundleStore"];
     password?: string;
     localCredential?: DaemonClientConfig["localCredential"];
+    oidcToken?: DaemonClientConfig["oidcToken"];
   } = {},
   deps: Pick<
     DaemonConnectionDependencies<DaemonProbeClient>,
@@ -293,6 +300,7 @@ interface ProbeOptions {
   timeoutMs?: number;
   password?: string;
   localCredential?: DaemonClientConfig["localCredential"];
+  oidcToken?: DaemonClientConfig["oidcToken"];
   capabilities?: DaemonClientConfig["capabilities"];
   trace?: DaemonClientConfig["trace"];
   createPluginClientBundleStore?: DaemonClientConfig["createPluginClientBundleStore"];

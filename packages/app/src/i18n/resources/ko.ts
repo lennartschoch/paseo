@@ -1944,6 +1944,8 @@ export const ko: TranslationResources = {
       confirmAction: "끄기",
     },
   },
+  // FORK(oidc): English until translated. See .fork/README.md.
+  oidc: en.oidc,
   pairing: {
     hostPassword: {
       title: "{{host}}의 비밀번호",

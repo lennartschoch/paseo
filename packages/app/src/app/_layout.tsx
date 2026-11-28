@@ -932,6 +932,8 @@ function RootStack() {
         <Stack.Screen name="schedules" />
       </Stack.Protected>
       <Stack.Screen name="h/[serverId]" />
+      {/* FORK(oidc): outside the store-ready guard so a cold web redirect survives startup. */}
+      <Stack.Screen name="oidc-callback" />
       <Stack.Screen name="settings/device-hosts/[serverId]" />
       <Stack.Screen name="settings/hosts/[serverId]/index" />
       <Stack.Screen name="settings/hosts/[serverId]/[hostSection]" />

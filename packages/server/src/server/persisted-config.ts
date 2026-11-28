@@ -20,6 +20,7 @@ import { AgentProfileSchema, AgentSkillSelectionSchema } from "@getpaseo/protoco
 import { PluginIdSchema, PluginSourceSchema } from "@getpaseo/protocol/plugin-config";
 import { TerminalProfileSchema } from "@getpaseo/protocol/terminal-profile";
 import { PaseoServicePortAllocationSchema } from "@getpaseo/protocol/paseo-config-schema";
+import { OidcAuthSettingsSchema } from "./oidc-auth-settings.js";
 
 export const LogLevelSchema = z.enum(["trace", "debug", "info", "warn", "error", "fatal"]);
 export const LogFormatSchema = z.enum(["pretty", "json"]);
@@ -81,6 +82,8 @@ const BcryptHashSchema = z.string().regex(/^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/
 const DaemonAuthSchema = z
   .object({
     password: BcryptHashSchema.optional(),
+    // FORK(oidc): see .fork/README.md.
+    oidc: OidcAuthSettingsSchema.optional(),
   })
   .strict();
 
